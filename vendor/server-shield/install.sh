@@ -108,7 +108,7 @@ get_version() {
     if [[ -f "$SHIELD_DIR/VERSION" ]]; then
         cat "$SHIELD_DIR/VERSION"
     else
-        curl -s "$GITHUB_RAW/VERSION" 2>/dev/null || echo "3.3.0"
+        echo "3.3.0"
     fi
 }
 
