@@ -35,6 +35,52 @@ server_shield() {
   bash "$ROOT/vendor/server-shield/install.sh"
 }
 
+update_moonlight() {
+  local url="https://github.com/SetFire11/moonlight-security.git"
+  local saved="" tmp=""
+  echo "Скачиваю обновление..."
+  case "$ROOT" in
+    /|/usr|/usr/*|/bin|/sbin|/etc|/etc/*|/var|/var/*|/opt|/home|/root)
+      echo "Обновление остановлено: неожиданный каталог $ROOT"
+      return 1
+      ;;
+  esac
+  [[ -f "$ROOT/moonlight.sh" && -f "$ROOT/install.sh" ]] || {
+    echo "Каталог не похож на Moonlight Security: $ROOT"
+    return 1
+  }
+  if ! command -v git >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y git ca-certificates
+  fi
+  if [[ -f "$ROOT/trafficguard/exclude.list" ]]; then
+    saved="$(mktemp)"
+    cp -a "$ROOT/trafficguard/exclude.list" "$saved"
+  fi
+  tmp="$(mktemp -d)"
+  if ! GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch main "$url" "$tmp/src"; then
+    echo "Не удалось скачать обновление."
+    rm -rf "$tmp"
+    [[ -n "$saved" ]] && rm -f "$saved"
+    return 1
+  fi
+  rm -rf "$ROOT"
+  mkdir -p "$ROOT"
+  cp -a "$tmp/src/." "$ROOT/"
+  rm -rf "$tmp"
+  if [[ -n "$saved" ]]; then
+    mkdir -p "$ROOT/trafficguard"
+    cp -a "$saved" "$ROOT/trafficguard/exclude.list"
+    rm -f "$saved"
+  fi
+  bash "$ROOT/install.sh" || return 1
+  echo
+  echo "Обновление установлено. Меню откроется заново."
+  pause
+  exec bash "$ROOT/moonlight.sh"
+}
+
 while true; do
   clear
   echo -e "${CYAN}Moonlight Security${NC}"
@@ -43,6 +89,7 @@ while true; do
   echo "  1  Traffic Guard — списки сканеров"
   echo "  2  RemnaNode AntiScan — лимиты, Fail2Ban, CrowdSec, подсети РКН"
   echo "  3  Server Shield — файрвол, DDoS, SSH"
+  echo "  4  Обновление"
   echo "  0  Выход"
   echo
   read -r -p "Пункт: " choice < /dev/tty || exit 0
@@ -50,6 +97,7 @@ while true; do
     1) traffic_guard; pause ;;
     2) antiscan; pause ;;
     3) server_shield; pause ;;
+    4) update_moonlight; pause ;;
     0) exit 0 ;;
     *) ;;
   esac

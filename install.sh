@@ -29,3 +29,4 @@ echo
 echo "1  Traffic Guard"
 echo "2  RemnaNode AntiScan"
 echo "3  Server Shield"
+echo "4  Обновление"

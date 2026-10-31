@@ -27,6 +27,7 @@ moonlight
 | 1 | Traffic Guard | Блок сканеров |
 | 2 | AntiScan | Лимиты, Fail2Ban, CrowdSec, подсети РКН, BBR |
 | 3 | Server Shield | Файрвол, DDoS, SSH, nginx |
+| 4 | Обновление | Ставит свежую версию с GitHub, свои исключения сохраняет |
 
 Обновить списки сканеров: меню Traffic Guard или команда `rknpidor`.
 
