@@ -50,31 +50,36 @@ _get_server_display_name() {
 
 # Premium ASCII Header
 print_header() {
+    local lib="/opt/moonlight-security/lib/ui.sh"
+    if [[ -f "$lib" ]]; then
+        declare -F ui_screen >/dev/null 2>&1 || source "$lib"
+        ROOT="/opt/moonlight-security"
+        ui_init
+        ui_screen "Server Shield"
+        return
+    fi
     local version=$(_get_version)
     clear
     echo ""
-    echo -e "  ${DIM}┌─────────────────────────────────────────────────────────────┐${NC}"
-    echo -e "  ${DIM}│${NC}                                                             ${DIM}│${NC}"
-    echo -e "  ${DIM}│${NC}   ${CYAN}███████╗${NC}${WHITE}██╗  ██╗${NC}${CYAN}██╗${NC}${WHITE}███████╗${NC}${CYAN}██╗     ${NC}${WHITE}██████╗ ${NC}              ${DIM}│${NC}"
-    echo -e "  ${DIM}│${NC}   ${CYAN}██╔════╝${NC}${WHITE}██║  ██║${NC}${CYAN}██║${NC}${WHITE}██╔════╝${NC}${CYAN}██║     ${NC}${WHITE}██╔══██╗${NC}              ${DIM}│${NC}"
-    echo -e "  ${DIM}│${NC}   ${CYAN}███████╗${NC}${WHITE}███████║${NC}${CYAN}██║${NC}${WHITE}█████╗  ${NC}${CYAN}██║     ${NC}${WHITE}██║  ██║${NC}              ${DIM}│${NC}"
-    echo -e "  ${DIM}│${NC}   ${CYAN}╚════██║${NC}${WHITE}██╔══██║${NC}${CYAN}██║${NC}${WHITE}██╔══╝  ${NC}${CYAN}██║     ${NC}${WHITE}██║  ██║${NC}              ${DIM}│${NC}"
-    echo -e "  ${DIM}│${NC}   ${CYAN}███████║${NC}${WHITE}██║  ██║${NC}${CYAN}██║${NC}${WHITE}███████╗${NC}${CYAN}███████╗${NC}${WHITE}██████╔╝${NC}              ${DIM}│${NC}"
-    echo -e "  ${DIM}│${NC}   ${CYAN}╚══════╝${NC}${WHITE}╚═╝  ╚═╝${NC}${CYAN}╚═╝${NC}${WHITE}╚══════╝${NC}${CYAN}╚══════╝${NC}${WHITE}╚═════╝ ${NC}              ${DIM}│${NC}"
-    echo -e "  ${DIM}│${NC}                                                             ${DIM}│${NC}"
-    echo -e "  ${DIM}│${NC}          ${DIM}Server Security Suite${NC}  ${WHITE}v${version}${NC}                      ${DIM}│${NC}"
-    echo -e "  ${DIM}└─────────────────────────────────────────────────────────────┘${NC}"
+    echo -e "  ${WHITE}Server Shield${NC}  ${DIM}v${version}${NC}"
     echo ""
 }
 
 # Компактный header для подменю
 print_header_mini() {
     local title="$1"
+    local lib="/opt/moonlight-security/lib/ui.sh"
+    if [[ -f "$lib" ]]; then
+        declare -F ui_screen >/dev/null 2>&1 || source "$lib"
+        ROOT="/opt/moonlight-security"
+        ui_init
+        ui_screen "$title"
+        return
+    fi
     local version=$(_get_version)
     clear
     echo ""
-    echo -e "  ${CYAN}${BOLD}SHIELD${NC} ${DIM}v${version}${NC} │ ${WHITE}${title}${NC}"
-    echo -e "  ${DIM}─────────────────────────────────────────────────────────────${NC}"
+    echo -e "  ${WHITE}Server Shield${NC} ${DIM}v${version}${NC}  ${WHITE}${title}${NC}"
     echo ""
 }
 

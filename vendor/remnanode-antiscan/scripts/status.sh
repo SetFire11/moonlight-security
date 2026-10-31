@@ -1,101 +1,107 @@
 #!/bin/bash
-# ufw-antiscan/scripts/status.sh
-# Read-only отчёт о состоянии защиты
+# Отчёт о состоянии AntiScan. Только чтение.
 
 set -euo pipefail
-export LC_ALL=C
+export LC_ALL=C.UTF-8
 
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
-DIM='\033[2m'; BOLD='\033[1m'; NC='\033[0m'
-if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then GREEN='' YELLOW='' RED='' DIM='' BOLD='' NC=''; fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/lib/ui.sh"
+ui_init
 
-ok()      { echo -e "  ${GREEN}✔${NC}  $*"; }
-warn()    { echo -e "  ${YELLOW}▲${NC}  $*"; }
-bad()     { echo -e "  ${RED}✘${NC}  $*"; }
-# Optional feature that is simply not enabled: not a problem, so no warning colour.
-off()     { echo -e "  ${DIM}–  $*${NC}"; }
-section() { echo -e "\n${BOLD}━━━ $* ━━━${NC}"; }
+FRAME=0
+close_section() {
+    [[ "$FRAME" == 1 ]] || return 0
+    ui_frame_close
+    FRAME=0
+}
+section() {
+    close_section
+    ui_frame_open "$1"
+    FRAME=1
+}
+ok()   { ui_note ok "$*"; }
+warn() { ui_note warn "$*"; }
+bad()  { ui_note bad "$*"; }
+off()  { ui_note gray "$*"; }
 
-echo ""
-echo -e "${BOLD}RemnaNode AntiScan — статус защиты${NC}"
-echo -e "$(date)"
+ui_screen "Статус защиты"
+echo
 
-# ── UFW ───────────────────────────────────────────────────────────────────────
 section "UFW"
 if [[ -f /var/lib/ufw-antiscan/pending ]]; then
-    warn "Применение не подтверждено; ожидается автоматический откат"
+    warn "Применение не подтверждено, ждёт отката"
 fi
 
-UFW_STATUS=$(ufw status 2>/dev/null | head -1 || true)
+UFW_STATUS=$(LC_ALL=C ufw status 2>/dev/null | head -1 || true)
 if [[ "$UFW_STATUS" == "Status: active" ]]; then
-    ok "UFW активен"
+    ok "UFW включён"
 elif grep -q "UFW-ANTISCAN START" /etc/ufw/before.rules 2>/dev/null; then
-    bad "UFW неактивен при установленных Experimental-правилах"
+    bad "UFW выключен, а правила Experimental уже записаны"
 else
-    warn "UFW неактивен; для режима Basic он не обязателен"
+    warn "UFW выключен. Для Basic это не мешает"
 fi
 
 if grep -q "UFW-ANTISCAN START" /etc/ufw/before.rules 2>/dev/null; then
-    ok "Правила ufw-antiscan записаны (before.rules)"
+    ok "Правила записаны в before.rules"
     if iptables -S ufw-antiscan >/dev/null 2>&1; then
         if iptables -C ufw-before-input -j ufw-antiscan >/dev/null 2>&1; then
             ok "Цепочка IPv4 подключена"
         else
-            bad "Цепочка IPv4 есть, но переход к ней отсутствует"
+            bad "Цепочка IPv4 есть, перехода к ней нет"
         fi
     else
         bad "Цепочка IPv4 не загружена"
     fi
 else
-    off "Experimental-правила не установлены"
+    off "Experimental не установлен"
 fi
 
-# ── SSH Basic ─────────────────────────────────────────────────────────────────
-section "SSH Basic"
+section "SSH"
 SSH_DROPIN=/etc/ssh/sshd_config.d/00-remnanode-antiscan.conf
 if [[ -f "$SSH_DROPIN" ]]; then
-    ok "Управляемая SSH-конфигурация установлена"
+    ok "Конфигурация SSH установлена"
     SSHD=$(command -v sshd 2>/dev/null || true)
     [[ -n "$SSHD" ]] || [[ ! -x /usr/sbin/sshd ]] || SSHD=/usr/sbin/sshd
     if [[ -n "$SSHD" ]]; then
-        EFFECTIVE=$("$SSHD" -T 2>/dev/null || true)
+        EFFECTIVE=$(LC_ALL=C "$SSHD" -T 2>/dev/null || true)
         PUBKEY=$(awk '$1=="pubkeyauthentication"{print $2}' <<< "$EFFECTIVE")
         PASSWORD=$(awk '$1=="passwordauthentication"{print $2}' <<< "$EFFECTIVE")
         KBD=$(awk '$1=="kbdinteractiveauthentication"{print $2}' <<< "$EFFECTIVE")
-        echo "    PubkeyAuthentication:       ${PUBKEY:-?}"
-        echo "    PasswordAuthentication:     ${PASSWORD:-?}"
-        echo "    KbdInteractiveAuthentication: ${KBD:-?}"
+        ui_fact "Ключ" "${PUBKEY:-?}"
+        ui_fact "Пароль" "${PASSWORD:-?}"
+        ui_fact "Keyboard" "${KBD:-?}"
         [[ "$PUBKEY" == yes && "$PASSWORD" == no && "$KBD" == no ]] \
-            && ok "Вход по ключу включён, парольные методы отключены" \
-            || warn "Эффективная конфигурация SSH отличается от ожидаемой"
+            && ok "Вход по ключу, пароль выключен" \
+            || warn "SSH сейчас настроен иначе"
     else
         bad "sshd не найден"
     fi
 else
-    off "Basic не управляет парольной аутентификацией SSH"
+    off "Basic не управляет входом по паролю"
 fi
 
-# ── Kernel/network tuning ────────────────────────────────────────────────────
-section "BBR + CAKE / IPv6"
+section "BBR"
 BBR_SYSCTL=/etc/sysctl.d/99-remnanode-antiscan-bbr-cake.conf
 IPV6_SYSCTL=/etc/sysctl.d/99-remnanode-antiscan-ipv6.conf
 TCP_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unavailable)
 DEFAULT_QDISC=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo unavailable)
-echo "    TCP congestion control: ${TCP_CC}"
-echo "    Default qdisc:          ${DEFAULT_QDISC}"
+ui_fact "TCP" "$TCP_CC"
+ui_fact "Qdisc" "$DEFAULT_QDISC"
 if [[ "$TCP_CC" == bbr && "$DEFAULT_QDISC" == cake ]]; then
-    ok "BBR включён, CAKE выбран как default qdisc"
+    ok "BBR включён, CAKE выбран"
 elif [[ -f "$BBR_SYSCTL" ]]; then
-    bad "Конфиг BBR + CAKE установлен, но эффективные значения отличаются"
+    bad "Файл BBR есть, рабочие значения другие"
 else
-    off "BBR + CAKE не включены через AntiScan"
+    off "BBR + CAKE через AntiScan не включены"
 fi
 if command -v tc >/dev/null; then
     CAKE_ACTIVE=$(tc qdisc show 2>/dev/null | grep -c 'qdisc cake ' || true)
     if [[ "$CAKE_ACTIVE" -gt 0 ]]; then
-        ok "CAKE активен как минимум на ${CAKE_ACTIVE} qdisc"
+        ok "CAKE уже на интерфейсах: ${CAKE_ACTIVE}"
     elif [[ "$DEFAULT_QDISC" == cake ]]; then
-        warn "CAKE задан по умолчанию, но ещё не виден на активных интерфейсах; может потребоваться reboot"
+        warn "CAKE включится на интерфейсах после перезагрузки"
     fi
 fi
 
@@ -114,87 +120,77 @@ if [[ -d /proc/sys/net/ipv6/conf ]]; then
         fi
     done
     if [[ "$IPV6_DISABLED" == 0 ]]; then
-        ok "IPv6 включён на существующих интерфейсах"
+        ok "IPv6 включён"
     elif [[ "$IPV6_ENABLED" == 0 ]]; then
-        ok "IPv6 отключён на существующих интерфейсах"
+        ok "IPv6 выключен"
     else
-        warn "Состояние IPv6 смешанное: включено ${IPV6_ENABLED}, отключено ${IPV6_DISABLED} интерфейсов"
+        warn "IPv6 включён на ${IPV6_ENABLED}, выключен на ${IPV6_DISABLED}"
     fi
-    [[ ! -f "$IPV6_SYSCTL" ]] || ok "Состояние IPv6 управляется AntiScan"
+    [[ ! -f "$IPV6_SYSCTL" ]] || ok "IPv6 держит AntiScan"
 else
-    warn "IPv6 отсутствует или отключён параметром ядра"
+    warn "IPv6 нет"
 fi
 
-# ── RKN networks ──────────────────────────────────────────────────────────────
-section "Блокировка подсетей РКН"
-bash "$(dirname "${BASH_SOURCE[0]}")/rkn.sh" status || warn "Не удалось получить статус блокировки РКН"
+close_section
+bash "$SCRIPT_DIR/rkn.sh" status || { section "РКН"; warn "Статус РКН не прочитался"; }
 
-# ── Portscan-баны ─────────────────────────────────────────────────────────────
-section "AntiScan (ipt_recent)"
-
+section "PORTSCAN"
 RECENT_FILE=/proc/net/xt_recent/PORTSCANNERS
 [[ -r "$RECENT_FILE" ]] || RECENT_FILE=/proc/net/ipt_recent/PORTSCANNERS
 PORTSCAN_ENABLED=0
 if iptables -S ufw-antiscan 2>/dev/null | grep -q PORTSCANNERS; then
     PORTSCAN_ENABLED=1
     if [[ ! -r "$RECENT_FILE" ]]; then
-        warn "Portscan autoban включён, но таблица xt_recent недоступна"
+        warn "Автобан включён, таблица recent недоступна"
     else
         SCAN_COUNT=$(wc -l < "$RECENT_FILE")
         if [[ "$SCAN_COUNT" -gt 0 ]]; then
-            warn "Записей recent (включая истёкшие): ${SCAN_COUNT}"
-            echo ""
-            echo -e "  ${BOLD}Последние 10 забаненных IP:${NC}"
+            warn "Записей recent: ${SCAN_COUNT}"
             awk '{
                 for(i=1;i<=NF;i++){
-                    if($i ~ /^src=/) { gsub("src=","",$i); printf "    %s\n",$i }
+                    if($i ~ /^src=/) { gsub("src=","",$i); print $i }
                 }
-            }' "$RECENT_FILE" 2>/dev/null | tail -10
+            }' "$RECENT_FILE" 2>/dev/null | tail -10 | while IFS= read -r ip; do
+                ui_note gray "$ip"
+            done
         else
-            ok "Активных portscan-банов нет"
+            ok "Активных банов нет"
         fi
     fi
 else
-    off "Portscan autoban не включён"
+    off "Автобан сканеров выключен"
 fi
 
-# ── fail2ban ──────────────────────────────────────────────────────────────────
-section "fail2ban (SSH)"
-
+section "FAIL2BAN"
 if command -v fail2ban-client &>/dev/null; then
     if systemctl is-active fail2ban &>/dev/null; then
-        ok "fail2ban запущен"
+        ok "Запущен"
         F2B_OUT=$(fail2ban-client status sshd 2>/dev/null || true)
         if [[ -n "$F2B_OUT" ]]; then
             BANNED=$(echo "$F2B_OUT" | awk '/Currently banned:/{print $NF}')
             TOTAL=$(echo "$F2B_OUT"  | awk '/Total banned/{print $NF}')
-            echo "    Сейчас забанено: ${BANNED:-0}"
-            echo "    Всего за всё время: ${TOTAL:-0}"
+            ui_fact "Сейчас" "${BANNED:-0}"
+            ui_fact "Всего" "${TOTAL:-0}"
         fi
     else
-        bad "fail2ban не запущен"
+        bad "Не запущен"
     fi
 else
-    off "Fail2Ban не установлен"
+    off "Не установлен"
 fi
 
-# ── CrowdSec ──────────────────────────────────────────────────────────────────
-section "CrowdSec"
-
+section "CROWDSEC"
 if command -v cscli &>/dev/null; then
     if systemctl is-active crowdsec &>/dev/null; then
-        ok "CrowdSec агент запущен"
+        ok "Агент запущен"
     else
-        bad "CrowdSec агент не запущен"
+        bad "Агент не запущен"
     fi
-
     if systemctl is-active crowdsec-firewall-bouncer &>/dev/null; then
-        ok "CrowdSec bouncer запущен"
+        ok "Bouncer запущен"
     else
-        bad "CrowdSec bouncer не запущен"
+        bad "Bouncer не запущен"
     fi
-
-    # cscli returns alerts, each carrying its own list of decisions (bans).
     crowdsec_bans() {
         cscli decisions list "$@" -o json 2>/dev/null | python3 -c '
 import json
@@ -204,44 +200,45 @@ bans = [d for a in alerts for d in (a.get("decisions") or [])]
 print(len(bans))
 for d in bans[:5]:
     value, scenario, duration = (str(d.get(k, "?")) for k in ("value", "scenario", "duration"))
-    print(f"{value:<40} {scenario} ({duration})")
+    print("%s  %s (%s)" % (value, scenario, duration))
 ' 2>/dev/null
     }
     LOCAL_BANS=$(crowdsec_bans || true)
     if [[ -n "$LOCAL_BANS" ]]; then
-        ok "Активных локальных банов: $(head -1 <<< "$LOCAL_BANS")"
+        ok "Локальных банов: $(head -1 <<< "$LOCAL_BANS")"
         if [[ $(wc -l <<< "$LOCAL_BANS") -gt 1 ]]; then
-            echo -e "    ${BOLD}Последние:${NC}"
-            tail -n +2 <<< "$LOCAL_BANS" | sed 's/^/    /'
+            tail -n +2 <<< "$LOCAL_BANS" | while IFS= read -r line; do
+                ui_note gray "$line"
+            done
         fi
     else
-        warn "Не удалось получить решения CrowdSec (cscli decisions list)"
+        warn "Список решений не прочитался"
     fi
-    # Includes the community blocklist pulled from the Central API.
     ALL_BANS=$(crowdsec_bans -a | head -1 || true)
-    [[ -z "$ALL_BANS" ]] || echo "    Всего с community blocklist: ${ALL_BANS}"
+    [[ -z "$ALL_BANS" ]] || ui_fact "Всего" "$ALL_BANS"
 else
-    off "CrowdSec не установлен"
+    off "Не установлен"
 fi
 
-# ── Активные правила ──────────────────────────────────────────────────────────
-section "Правила UFW"
-ufw status numbered 2>/dev/null | sed -n '/./{p;}' | sed -n '1,30p' || warn "Не удалось прочитать правила UFW"
+section "ПРАВИЛА"
+got_rule=0
+while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    got_rule=1
+    ui_note gray "$line"
+done < <(LC_ALL=C ufw status numbered 2>/dev/null | sed -n '1,20p' || true)
+[[ "$got_rule" == 1 ]] || warn "Правила UFW не прочитались"
 
-echo ""
-echo -e "${BOLD}Команды управления:${NC}"
+section "КОМАНДЫ"
 if [[ "$PORTSCAN_ENABLED" == 1 ]]; then
-    echo "  Разбанить portscan-IP:    echo -<IP> > ${RECENT_FILE}"
-    echo "  Разбанить всех сканеров:  echo / > ${RECENT_FILE}"
+    ui_note gray "Снять бан: echo -<IP> > ${RECENT_FILE}"
 fi
 if command -v fail2ban-client >/dev/null; then
-    echo "  Разбанить SSH (Fail2Ban): fail2ban-client set sshd unbanip <IP>"
+    ui_note gray "Fail2Ban: fail2ban-client set sshd unbanip <IP>"
 fi
 if command -v cscli >/dev/null; then
-    echo "  Разбанить (CrowdSec):     cscli decisions delete --ip <IP>"
+    ui_note gray "CrowdSec: cscli decisions delete --ip <IP>"
 fi
-if [[ -f /etc/remnanode-antiscan/rkn.conf ]]; then
-    echo "  Обновить списки РКН:      sudo bash install.sh rkn update"
-fi
-echo "  Откат:                    sudo bash install.sh rollback"
-echo ""
+ui_note gray "Откат: пункт Удалить в меню AntiScan"
+close_section
+echo

@@ -6,95 +6,13 @@ export LANG=C.UTF-8 LC_ALL=C.UTF-8
 [[ $EUID -ne 0 ]] && { echo "Запуск только от root"; exit 1; }
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-VERSION="1.1"
-[[ -f "$ROOT/VERSION" ]] && VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+# shellcheck source=lib/ui.sh
+source "$ROOT/lib/ui.sh"
+ui_init
 
-RESET=$'\033[0m'
-BOLD=$'\033[1m'
-GOLD=$'\033[38;5;179m'
-CYAN=$'\033[38;5;117m'
-WHITE=$'\033[38;5;255m'
-GRAY=$'\033[38;5;245m'
-LINE=$'\033[38;5;60m'
-GREEN=$'\033[38;5;114m'
-RED=$'\033[38;5;203m'
-YELLOW=$'\033[38;5;221m'
-
-W=62
-
-pause() { read -r -p $'\n  Enter — назад  ' < /dev/tty || true; }
-
-pad() {
-  local text="$1" n
-  n=$(( W - ${#text} ))
-  (( n < 0 )) && n=0
-  printf '%s%*s' "$text" "$n" ''
-}
-
-rule() {
-  local kind="$1" fill="" i
-  for (( i=0; i<W; i++ )); do fill+="─"; done
-  case "$kind" in
-    top) printf "${LINE}╭%s╮${RESET}\n" "$fill" ;;
-    mid) printf "${LINE}├%s┤${RESET}\n" "$fill" ;;
-    bot) printf "${LINE}╰%s╯${RESET}\n" "$fill" ;;
-  esac
-}
-
-row() {
-  printf "${LINE}│${RESET}%s${LINE}│${RESET}\n" "$(pad "$1")"
-}
-
-paint_row() {
-  local plain="$1" colored="$2" n
-  n=$(( W - ${#plain} ))
-  (( n < 0 )) && n=0
-  printf "${LINE}│${RESET}%s%*s${LINE}│${RESET}\n" "$colored" "$n" ''
-}
-
-header() {
-  local subtitle="$1"
-  local host ip load meta
-  host="$(hostname 2>/dev/null || echo server)"
-  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  [[ -z "$ip" ]] && ip="нет адреса"
-  load="$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "-")"
-  meta="$host  ·  $ip  ·  load $load"
-  (( ${#meta} > W - 2 )) && meta="${meta:0:$((W - 2))}"
-  local left="  ●  Moonlight Security"
-  local right="v${VERSION}"
-  local gap=$(( W - ${#left} - ${#right} - 1 ))
-  (( gap < 1 )) && gap=1
-  clear
-  echo
-  rule top
-  printf "${LINE}│${RESET}  ${GOLD}●${RESET}  ${BOLD}${WHITE}Moonlight Security${RESET}%*s${GRAY}%s${RESET} ${LINE}│${RESET}\n" "$gap" "" "$right"
-  paint_row "  $subtitle" "  ${GRAY}${subtitle}${RESET}"
-  rule mid
-  paint_row "  $meta" "  ${CYAN}${meta}${RESET}"
-  rule bot
-  echo
-}
-
-ask() {
-  echo
-  read -r -p "$(printf "  ${GOLD}▸${RESET} Пункт: ")" choice < /dev/tty || exit 0
-}
-
-usage_bar() {
-  local used="$1" total="$2" pct=0 fill empty i bar=""
-  [[ "${total:-0}" -gt 0 ]] && pct=$(( used * 100 / total ))
-  (( pct > 100 )) && pct=100
-  fill=$(( pct * 18 / 100 ))
-  empty=$(( 18 - fill ))
-  local color="$GREEN"
-  (( pct >= 75 )) && color="$YELLOW"
-  (( pct >= 90 )) && color="$RED"
-  for (( i=0; i<fill; i++ )); do bar+="█"; done
-  printf '%b' "$color$bar$GRAY"
-  for (( i=0; i<empty; i++ )); do printf '░'; done
-  printf '%b %3d%%' "$RESET" "$pct"
-}
+pause() { ui_pause; }
+header() { ui_screen "$1"; }
+ask() { ui_ask; }
 
 node_name() {
   command -v docker >/dev/null 2>&1 || return 0
@@ -112,13 +30,86 @@ traffic_state() {
   fi
 }
 
+cpu_percent() {
+  local t1="" i1="" t2="" i2="" dt di
+  read -r t1 i1 < <(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8, $5}' /proc/stat 2>/dev/null || true)
+  [[ -z "${t1:-}" ]] && { printf '0'; return; }
+  sleep 0.15
+  read -r t2 i2 < <(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8, $5}' /proc/stat 2>/dev/null || true)
+  [[ -z "${t2:-}" ]] && { printf '0'; return; }
+  dt=$(( t2 - t1 ))
+  di=$(( i2 - i1 ))
+  if (( dt > 0 )); then
+    printf '%s' $(( (dt - di) * 100 / dt ))
+  else
+    printf '0'
+  fi
+}
+
+cpu_cores_label() {
+  local n="${1:-1}"
+  case "$n" in
+    1) printf '1 ядро' ;;
+    2|3|4) printf '%s ядра' "$n" ;;
+    *) printf '%s ядер' "$n" ;;
+  esac
+}
+
+read_cpu() {
+  CPU_PCT="$(cpu_percent)"
+  CPU_CORES="$(cpu_cores_label "$(nproc 2>/dev/null || echo 1)")"
+}
+
+home_board() {
+  local os up ip load mem_total mem_avail mem_used disk_total disk_used
+  local mem_pct=0 disk_pct=0 tg node node_line
+  os="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-Linux}")"
+  [[ -z "$os" ]] && os="Linux"
+  up="$(uptime -p 2>/dev/null || true)"
+  [[ -z "$up" ]] && up="$(uptime 2>/dev/null | sed 's/.*up /up /; s/, *[0-9]* user.*//')"
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  [[ -z "$ip" ]] && ip="нет адреса"
+  load="$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "-")"
+  mem_total="$(awk '/MemTotal/{print $2}' /proc/meminfo)"
+  mem_avail="$(awk '/MemAvailable/{print $2}' /proc/meminfo)"
+  mem_used=$(( mem_total - mem_avail ))
+  read -r disk_used disk_total < <(df -P / | awk 'NR==2 {print $3, $2}')
+  [[ "${mem_total:-0}" -gt 0 ]] && mem_pct=$(( mem_used * 100 / mem_total ))
+  [[ "${disk_total:-0}" -gt 0 ]] && disk_pct=$(( disk_used * 100 / disk_total ))
+  tg="$(traffic_state)"
+  node="$(node_name)"
+  node_line="контейнер не найден"
+  if [[ -n "$node" ]]; then
+    local st
+    st="$(docker inspect -f '{{.State.Status}}' "$node" 2>/dev/null || echo "нет данных")"
+    node_line="$node · $st"
+  fi
+  echo
+  ui_frame_open "СЕРВЕР"
+  ui_fact "ОС" "$os"
+  ui_fact "Аптайм" "$up"
+  ui_fact "Адрес" "$ip"
+  ui_fact "Load" "$load"
+  ui_frame_close
+  ui_frame_open "ЖЕЛЕЗО"
+  ui_bar "CPU" "${CPU_PCT:-0}" "${CPU_CORES:-}"
+  ui_bar "Память" "$mem_pct" "$(( mem_used / 1024 )) / $(( mem_total / 1024 )) МБ"
+  ui_bar "Диск" "$disk_pct" "$(( disk_used / 1024 / 1024 )) / $(( disk_total / 1024 / 1024 )) ГБ"
+  ui_frame_close
+  ui_frame_open "СЕЙЧАС"
+  ui_fact "Сканеры" "$tg"
+  ui_fact "Нода" "$node_line"
+  ui_frame_close
+}
+
 traffic_guard_menu() {
   while true; do
     header "Списки сканеров"
-    echo -e "  ${GOLD}1${RESET}   ${WHITE}Установка${RESET}     ${GRAY}включить блокировку сканеров${RESET}"
-    echo -e "  ${GOLD}2${RESET}   ${WHITE}Проверка${RESET}      ${GRAY}состояние, логи, ручные адреса${RESET}"
+    ui_section "ДЕЙСТВИЯ"
+    ui_item 1 "Установка" "нужен включённый UFW" green
+    ui_item 2 "Проверка" "состояние, логи, адреса" cyan
     echo
-    echo -e "  ${GOLD}3${RESET}   ${WHITE}Выход${RESET}"
+    ui_item 3 "Выход" "назад в главное меню" gray
     ask
     case "$choice" in
       1) bash "$ROOT/trafficguard/apply.sh"; pause ;;
@@ -129,11 +120,6 @@ traffic_guard_menu() {
 }
 
 antiscan() {
-  header "AntiScan"
-  echo -e "  ${YELLOW}Меняет UFW, SSH, Fail2Ban или CrowdSec только после выбора в его меню.${RESET}"
-  echo "  Неподтверждённые правила откатятся сами."
-  echo "  Проверь новое SSH-подключение, затем confirm."
-  echo
   bash "$ROOT/vendor/remnanode-antiscan/install.sh"
 }
 
@@ -142,47 +128,72 @@ server_shield() {
     shield
     return
   fi
-  header "Server Shield"
-  echo -e "  ${YELLOW}Ставит UFW, Fail2Ban и может отключить вход по паролю.${RESET}"
-  echo "  Запускай, только если SSH-ключ уже лежит на сервере."
-  echo
-  export MOONLIGHT_SHIELD_SRC="$ROOT/vendor/server-shield"
-  bash "$ROOT/vendor/server-shield/install.sh"
+  while true; do
+    header "Server Shield"
+    echo
+    ui_frame_open "ВНИМАНИЕ"
+    ui_row "Ставит UFW, Fail2Ban и может отключить вход по паролю."
+    ui_row "Запускай, только если SSH-ключ уже лежит на сервере."
+    ui_frame_close
+    ui_section "ДЕЙСТВИЯ"
+    ui_item 1 "Установка" "мастер файрвола" green
+    echo
+    ui_item 0 "Назад" "в главное меню" gray
+    ask
+    case "$choice" in
+      1)
+        export MOONLIGHT_SHIELD_SRC="$ROOT/vendor/server-shield"
+        bash "$ROOT/vendor/server-shield/install.sh"
+        return
+        ;;
+      0) return ;;
+    esac
+  done
 }
 
 show_status() {
+  read_cpu
   header "Состояние сервера"
-  local mem_total mem_avail mem_used disk_total disk_used up node tg bbr
+  local mem_total mem_avail mem_used disk_total disk_used up load node tg bbr line
   mem_total="$(awk '/MemTotal/{print $2}' /proc/meminfo)"
   mem_avail="$(awk '/MemAvailable/{print $2}' /proc/meminfo)"
   mem_used=$(( mem_total - mem_avail ))
   read -r disk_used disk_total < <(df -P / | awk 'NR==2 {print $3, $2}')
   up="$(uptime -p 2>/dev/null || true)"
   [[ -z "$up" ]] && up="$(uptime | sed 's/.*up /up /; s/, *[0-9]* user.*//')"
+  load="$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "-")"
   node="$(node_name)"
   tg="$(traffic_state)"
   bbr="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "-")"
 
-  printf "  ${GRAY}%-12s${RESET}%s\n" "Время" "$up"
-  printf "  ${GRAY}%-12s${RESET}" "Память"
-  usage_bar "$mem_used" "$mem_total"
-  printf "   %s / %s МБ\n" "$(( mem_used / 1024 ))" "$(( mem_total / 1024 ))"
-  printf "  ${GRAY}%-12s${RESET}" "Диск"
-  usage_bar "$disk_used" "$disk_total"
-  printf "   %s / %s ГБ\n" "$(( disk_used / 1024 / 1024 ))" "$(( disk_total / 1024 / 1024 ))"
-  echo
-  printf "  ${GRAY}%-12s${RESET}%s\n" "Сканеры" "$tg"
-  printf "  ${GRAY}%-12s${RESET}%s\n" "TCP" "$bbr"
+  local mem_pct=0 disk_pct=0 node_line="контейнер не найден"
+  [[ "$mem_total" -gt 0 ]] && mem_pct=$(( mem_used * 100 / mem_total ))
+  [[ "$disk_total" -gt 0 ]] && disk_pct=$(( disk_used * 100 / disk_total ))
   if [[ -n "$node" ]]; then
     local st
     st="$(docker inspect -f '{{.State.Status}}' "$node" 2>/dev/null || echo "нет данных")"
-    printf "  ${GRAY}%-12s${RESET}%s  %s\n" "Нода" "$node" "$st"
-  else
-    printf "  ${GRAY}%-12s${RESET}%s\n" "Нода" "контейнер не найден"
+    node_line="$node  $st"
   fi
   echo
-  echo -e "  ${GRAY}Слушает${RESET}"
-  ss -lntu 2>/dev/null | awk 'NR==1 || /LISTEN|UNCONN/' | head -n 16 | sed 's/^/  /'
+  ui_frame_open "СЕРВЕР"
+  ui_fact "Время" "$up"
+  ui_fact "Load" "$load"
+  ui_fact "TCP" "$bbr"
+  ui_frame_close
+  ui_frame_open "ЖЕЛЕЗО"
+  ui_bar "CPU" "${CPU_PCT:-0}" "${CPU_CORES:-}"
+  ui_bar "Память" "$mem_pct" "$(( mem_used / 1024 )) / $(( mem_total / 1024 )) МБ"
+  ui_bar "Диск" "$disk_pct" "$(( disk_used / 1024 / 1024 )) / $(( disk_total / 1024 / 1024 )) ГБ"
+  ui_frame_close
+  ui_frame_open "ЗАЩИТА"
+  ui_fact "Сканеры" "$tg"
+  ui_fact "Нода" "$node_line"
+  ui_frame_close
+  ui_frame_open "СЛУШАЕТ"
+  while IFS= read -r line; do
+    ui_row "$line"
+  done < <(ss -lntu 2>/dev/null | awk 'NR>1 && /LISTEN|UNCONN/ {print}' | head -n 12)
+  ui_frame_close
   pause
 }
 
@@ -192,19 +203,26 @@ node_menu() {
     name="$(node_name)"
     header "Нода"
     if [[ -z "$name" ]]; then
-      echo "  Контейнер Remnawave Node не найден."
+      echo
+      ui_frame_open "НОДА"
+      ui_row "Контейнер Remnawave Node не найден."
+      ui_frame_close
       pause
       return
     fi
     local st
     st="$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "-")"
-    echo -e "  ${GRAY}Контейнер${RESET}   ${WHITE}$name${RESET}   ${CYAN}$st${RESET}"
     echo
-    echo -e "  ${GOLD}1${RESET}   ${WHITE}Контейнеры${RESET}"
-    echo -e "  ${GOLD}2${RESET}   ${WHITE}Логи${RESET}          ${GRAY}последние 50 строк${RESET}"
-    echo -e "  ${GOLD}3${RESET}   ${WHITE}Перезапуск${RESET}"
-    echo
-    echo -e "  ${GOLD}0${RESET}   ${WHITE}Назад${RESET}"
+    ui_frame_open "НОДА"
+    ui_fact "Контейнер" "$name"
+    ui_fact "Состояние" "$st"
+    ui_frame_close
+    ui_item 1 "Контейнеры" "все контейнеры на сервере"
+    ui_item 2 "Логи" "последние 50 строк"
+    ui_item 3 "Перезапуск" "спросит подтверждение"
+    ui_rule
+    ui_item 0 "Назад" ""
+    ui_close
     ask
     case "$choice" in
       1)
@@ -281,16 +299,19 @@ update_moonlight() {
 }
 
 while true; do
+  read_cpu
   header "Три защиты, каждая своим пунктом"
-  echo -e "  ${GOLD}1${RESET}   ${WHITE}Traffic Guard${RESET}    ${GRAY}списки сканеров${RESET}"
-  echo -e "  ${GOLD}2${RESET}   ${WHITE}AntiScan${RESET}         ${GRAY}лимиты, Fail2Ban, CrowdSec, РКН${RESET}"
-  echo -e "  ${GOLD}3${RESET}   ${WHITE}Server Shield${RESET}    ${GRAY}файрвол, DDoS, SSH${RESET}"
+  home_board
+  ui_section "ЗАЩИТА"
+  ui_item 1 "Traffic Guard" "списки сканеров" gold
+  ui_item 2 "AntiScan" "лимиты, Fail2Ban, CrowdSec, РКН" cyan
+  ui_item 3 "Server Shield" "файрвол, DDoS, SSH" green
+  ui_section "СЕРВИС"
+  ui_item 4 "Статус" "память, диск, порты, нода" yellow
+  ui_item 5 "Нода" "контейнеры, логи, перезапуск" yellow
+  ui_item 6 "Обновление" "свежая версия" yellow
   echo
-  echo -e "  ${GOLD}4${RESET}   ${WHITE}Статус${RESET}           ${GRAY}память, диск, порты, нода${RESET}"
-  echo -e "  ${GOLD}5${RESET}   ${WHITE}Нода${RESET}             ${GRAY}контейнеры, логи, перезапуск${RESET}"
-  echo -e "  ${GOLD}6${RESET}   ${WHITE}Обновление${RESET}       ${GRAY}свежая версия${RESET}"
-  echo
-  echo -e "  ${GOLD}0${RESET}   ${WHITE}Выход${RESET}"
+  ui_item 0 "Выход" "" gray
   ask
   case "$choice" in
     1) traffic_guard_menu ;;

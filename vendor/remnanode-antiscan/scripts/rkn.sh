@@ -446,28 +446,41 @@ disable() {
 }
 
 status() {
-    local count4 count6 drops dim='\033[2m'
-    [[ -n "$NC" ]] || dim=''
-    # Same markers as status.sh, since this output is embedded there.
+    local count4 count6 drops root lib when
+    export LC_ALL=C.UTF-8
+    root="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+    lib="$root/lib/ui.sh"
+    if [[ -f "$lib" ]] && ! declare -F ui_frame_open >/dev/null 2>&1; then
+        # shellcheck disable=SC1090
+        source "$lib"
+        ROOT="$root"
+        ui_init
+    fi
+    ui_frame_open "РКН"
     if ! [[ -f "$RKN_CONF" ]]; then
-        echo -e "  ${dim}–  Блокировка подсетей РКН не включена${NC}"
+        ui_fact "Состояние" "выключен"
+        ui_frame_close
         return 0
     fi
     if systemctl is-active "$RKN_LOAD_UNIT" >/dev/null 2>&1 && iptables -C INPUT -j "$RKN_CHAIN" 2>/dev/null; then
         count4=$(ipset list -t "$RKN_SET4" 2>/dev/null | awk -F': ' '/Number of entries/{print $2}')
         count6=$(ipset list -t "$RKN_SET6" 2>/dev/null | awk -F': ' '/Number of entries/{print $2}')
         drops=$(iptables -nvxL "$RKN_CHAIN" 2>/dev/null | awk '/match-set/{print $1; exit}')
-        echo -e "  ${GREEN}✔${NC}  Блокировка РКН активна: IPv4 ${count4:-?}, IPv6 ${count6:-?} подсетей"
-        echo "    Отброшено пакетов: ${drops:-?}"
+        ui_fact "Состояние" "включён"
+        ui_fact "IPv4" "${count4:-0}"
+        ui_fact "IPv6" "${count6:-0}"
+        ui_fact "Отбито" "${drops:-0}"
     else
-        echo -e "  ${RED}✘${NC}  Блокировка РКН настроена, но не загружена (systemctl status $RKN_LOAD_UNIT)"
+        ui_note bad "Настроен, но не загружен"
     fi
     if [[ -f "$RKN_CACHE" ]]; then
-        echo "    Последнее успешное обновление: $(date -r "$RKN_CACHE" '+%F %T')"
+        when="$(date -r "$RKN_CACHE" '+%F %T')"
+        ui_fact "Списки" "$when"
     fi
     if systemctl is-failed "$RKN_UPDATE_UNIT" >/dev/null 2>&1; then
-        echo -e "  ${YELLOW}▲${NC}  Последнее обновление не удалось: journalctl -u $RKN_UPDATE_UNIT"
+        ui_note warn "Последнее обновление не удалось"
     fi
+    ui_frame_close
 }
 
 case "${1:-}" in

@@ -6,23 +6,28 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CY
 
 MANUAL_FILE="/opt/trafficguard-manual.list"
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=../lib/ui.sh
+source "$ROOT/../lib/ui.sh"
+ui_init
 
 check_root() {
     [[ $EUID -ne 0 ]] && { echo -e "${RED}Запуск только от root!${NC}"; exit 1; }
 }
 
 check_firewall_safety() {
-    echo -e "${BLUE}[CHECK] Проверка конфигурации Firewall...${NC}"
+    echo "  Проверяю файрвол."
     if command -v ufw >/dev/null; then
         UFW_STATUS=$(ufw status | grep "Status" | awk '{print $2}')
         UFW_RULES=$(ufw show added 2>/dev/null)
-        if [[ "$UFW_STATUS" == "inactive" ]]; then
-            if [[ "$UFW_RULES" != *"22"* ]] && [[ "$UFW_RULES" != *"SSH"* ]] && [[ "$UFW_RULES" != *"OpenSSH"* ]]; then
-                echo -e "\n${RED}⛔ АВАРИЙНАЯ ОСТАНОВКА!${NC}"
-                echo -e "${YELLOW}UFW выключен и нет правил SSH.${NC}"
-                echo "Выполните: ufw allow ssh"
-                exit 1
-            fi
+        if [[ "$UFW_STATUS" != "active" ]]; then
+            echo "  Остановка: для Traffic Guard UFW должен быть включён."
+            echo "  Сначала: ufw allow OpenSSH && ufw enable"
+            exit 1
+        fi
+        if [[ "$UFW_RULES" != *"22"* ]] && [[ "$UFW_RULES" != *"SSH"* ]] && [[ "$UFW_RULES" != *"OpenSSH"* ]]; then
+            echo "  Остановка: в UFW нет правила SSH."
+            echo "  Сначала: ufw allow OpenSSH"
+            exit 1
         fi
     else
         if ! dpkg -l | grep -q netfilter-persistent; then
@@ -33,9 +38,10 @@ check_firewall_safety() {
 }
 
 uninstall_process() {
-    echo -e "\n${RED}=== УДАЛЕНИЕ TRAFFICGUARD ===${NC}"
-    trap 'echo -e "\nОтмена."; return' INT
-    read -p "Вы уверены? (y/N): " confirm < /dev/tty
+    ui_screen "Удаление"
+    echo
+    trap 'echo; echo "  Отмена."; return' INT
+    read -r -p "$(printf "  ${GOLD}${BOLD}▸${RESET} ${WHITE}Снять блокировку?${RESET} ${GRAY}[y/N]${RESET}: ")" confirm < /dev/tty
     trap 'exit 0' INT
 
     [[ "$confirm" != "y" ]] && return
@@ -69,7 +75,8 @@ uninstall_process() {
     fi
 
     systemctl restart rsyslog 2>/dev/null
-    echo -e "${GREEN}✅ Удалено.${NC}"
+    echo
+    echo "  Блокировка снята."
     exit 0
 }
 
@@ -80,52 +87,53 @@ manage_test_ip() {
     trap 'continue' INT
     
     while true; do
-        clear
-        echo -e "${YELLOW}=== 🧪 УПРАВЛЕНИЕ IP ===${NC}"
-        echo -e " ${RED}1.${NC} ⛔ ЗАБАНИТЬ IP (Add)"
-        echo -e " ${GREEN}2.${NC} ✅ РАЗБАНИТЬ IP (Select from list)"
-        echo -e " ${CYAN}0.${NC} ↩️  Назад"
-        echo ""
-        echo -ne "${YELLOW}👉 Действие:${NC} "
-        
-        read -r action < /dev/tty || continue
+        ui_screen "Адреса" "Ручная блокировка"
+        ui_open
+        ui_item 1 "Забанить" "добавить адрес в блок"
+        ui_item 2 "Разбанить" "убрать из ручного списка"
+        ui_rule
+        ui_item 0 "Назад" ""
+        ui_close
+        ui_ask
+        action="$choice"
 
         case $action in
             1)
-                echo -e "\nВведите IP для БЛОКИРОВКИ ${YELLOW}(Ctrl+C = Отмена)${NC}:"
-                trap 'echo -e "\nОтмена."; sleep 1; continue' INT
-                read -p "IP: " ip < /dev/tty
+                echo
+                trap 'echo; echo "  Отмена."; sleep 1; continue' INT
+                read -r -p "$(printf "  ${GOLD}${BOLD}▸${RESET} ${WHITE}Адрес для бана:${RESET} ")" ip < /dev/tty
                 [[ -z "$ip" ]] && continue
                 
                 OUTPUT=$(ipset add SCANNERS-BLOCK-V4 "$ip" 2>&1)
                 if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}✅ IP $ip ЗАБЛОКИРОВАН!${NC}"
+                    echo "  ${ip} добавлен в блок."
                     # Добавляем в файл, если его там еще нет
                     if ! grep -Fxq "$ip" "$MANUAL_FILE"; then
                         echo "$ip" >> "$MANUAL_FILE"
                     fi
                 else
-                    echo -e "${RED}❌ Ошибка:${NC} $OUTPUT"
+                    echo "  Не вышло: $OUTPUT"
                 fi
-                read -p "[Enter]..." < /dev/tty
+                ui_pause
                 ;;
             2)
-                echo -e "\n${GREEN}=== СПИСОК РУЧНЫХ БАНОВ ===${NC}"
+                echo
+                ui_frame_open "РУЧНЫЕ"
                 if [ ! -s "$MANUAL_FILE" ]; then
-                    echo "Список пуст."
+                    ui_row "Список пуст"
+                    MANUAL_IPS=()
                 else
-                    # Читаем файл в массив
                     mapfile -t MANUAL_IPS < "$MANUAL_FILE"
                     i=1
                     for ip in "${MANUAL_IPS[@]}"; do
-                        echo -e "${CYAN}$i)${NC} $ip"
-                        ((i++))
+                        ui_row "$i  $ip"
+                        i=$((i + 1))
                     done
                 fi
-                
-                echo -e "\nВведите ${CYAN}НОМЕР${NC} из списка или ${CYAN}IP${NC} вручную:"
-                trap 'echo -e "\nОтмена."; sleep 1; continue' INT
-                read -p "Выбор: " input < /dev/tty
+                ui_frame_close
+                echo
+                trap 'echo; echo "  Отмена."; sleep 1; continue' INT
+                read -r -p "$(printf "  ${GOLD}${BOLD}▸${RESET} ${WHITE}Номер или адрес:${RESET} ")" input < /dev/tty
                 [[ -z "$input" ]] && continue
                 
                 TARGET_IP=""
@@ -140,18 +148,19 @@ manage_test_ip() {
                     TARGET_IP="$input"
                 fi
                 
-                echo -e "Разбаниваем: ${YELLOW}$TARGET_IP${NC}..."
+                echo "  Снимаю ${TARGET_IP}."
                 
                 OUTPUT=$(ipset del SCANNERS-BLOCK-V4 "$TARGET_IP" 2>&1)
                 # Удаляем из файла в любом случае
                 sed -i "/^$TARGET_IP$/d" "$MANUAL_FILE"
                 
                 if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}✅ Успешно разбанен!${NC}"
+                    echo "  Адрес снят."
                 else
-                    echo -e "${RED}⚠️  Warning:${NC} $OUTPUT (Удален из списка)"
+                    echo "  Из блока не ушёл: $OUTPUT"
+                    echo "  Из ручного списка убран."
                 fi
-                read -p "[Enter]..." < /dev/tty
+                ui_pause
                 ;;
             0) 
                 trap 'exit 0' INT
@@ -163,21 +172,23 @@ manage_test_ip() {
 }
 
 update_lists() {
-    echo -e "\n${CYAN}Обновление списков...${NC}"
+    ui_screen "Списки"
+    echo
+    echo "  Перечитываю файлы."
     bash "$ROOT/apply.sh"
-    echo -e "${GREEN}Готово.${NC}"
+    echo "  Готово."
     sleep 2
 }
 
 install_process() {
     trap 'exit 1' INT
-    clear
-    echo -e "${CYAN}Установка Traffic Guard${NC}"
+    ui_screen "Установка"
     check_firewall_safety
     bash "$ROOT/apply.sh"
 
     if [ $? -ne 0 ]; then
-        echo -e "\n${RED}❌ ОШИБКА УСТАНОВКИ!${NC}"
+        echo
+        echo "  Установка остановилась."
         exit 1
     fi
 
@@ -194,13 +205,17 @@ install_process() {
     systemctl restart antiscan-aggregate.service 2>/dev/null || true
     systemctl restart antiscan-aggregate.timer
     
-    echo -e "\n${GREEN}✅ Установка завершена!${NC}"
+    echo
+    echo "  Установка завершена."
     sleep 2
 }
 
 view_log() {
     local file=$1
-    echo -e "\n${YELLOW}=== LIVE LOG (Ctrl+C для возврата) ===${NC}"
+    ui_screen "Лог"
+    echo
+    printf "  ${GRAY}Ctrl+C — назад${RESET}\n"
+    echo
     trap ':' INT
     tail -f "$file"
     trap 'exit 0' INT
@@ -209,35 +224,44 @@ view_log() {
 show_menu() {
     trap 'exit 0' INT
     while true; do
-        clear
-        IPSET_CNT=$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | grep "Number of entries" | awk '{print $4}')
-        [[ -z "$IPSET_CNT" ]] && IPSET_CNT="${RED}0${NC}"
-        PKTS_CNT=$(iptables -vnL SCANNERS-BLOCK 2>/dev/null | grep "LOG" | awk '{print $1}')
+        IPSET_CNT=$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | awk '/Number of entries/{print $4}')
+        PKTS_CNT=$(iptables -vnL SCANNERS-BLOCK 2>/dev/null | awk '/LOG/{print $1; exit}')
+        [[ -z "$IPSET_CNT" ]] && IPSET_CNT="0"
         [[ -z "$PKTS_CNT" ]] && PKTS_CNT="0"
-        
-        echo -e "${CYAN}╭────────────────────────────────────────────────────────────╮${NC}"
-        echo -e "${CYAN}│${NC}  Traffic Guard"
-        echo -e "${CYAN}│${NC}  Подсетей ${GREEN}${IPSET_CNT}${NC}    пакетов ${RED}${PKTS_CNT}${NC}"
-        echo -e "${CYAN}╰────────────────────────────────────────────────────────────╯${NC}"
+        ui_screen "Traffic Guard"
         echo
-        echo -e "  ${GREEN}1${NC}   Топ атак"
-        echo -e "  ${GREEN}2${NC}   Лог IPv4"
-        echo -e "  ${GREEN}3${NC}   Лог IPv6"
-        echo -e "  ${GREEN}4${NC}   Адреса вручную"
-        echo -e "  ${GREEN}5${NC}   Обновить списки"
-        echo -e "  ${GREEN}6${NC}   Переустановить"
-        echo -e "  ${RED}7${NC}   Удалить"
+        ui_frame_open "СОСТОЯНИЕ"
+        ui_fact "Подсети" "$IPSET_CNT"
+        ui_fact "Отбито пакетов" "$PKTS_CNT"
+        ui_frame_close
+        ui_section "СМОТРЕТЬ"
+        ui_item 1 "Топ атак" "последние записи" cyan
+        ui_item 2 "Лог IPv4" "в реальном времени" cyan
+        ui_item 3 "Лог IPv6" "в реальном времени" cyan
+        ui_section "СПИСКИ"
+        ui_item 4 "Адреса" "бан и разбан" gold
+        ui_item 5 "Обновить списки" "перечитать файлы" gold
+        ui_item 6 "Переустановить" "" yellow
+        ui_section "ОПАСНО"
+        ui_item 7 "Удалить" "снять блокировку" red
         echo
-        echo -e "  ${RED}0${NC}   Выход"
-        echo
-        echo -ne "  ${CYAN}▸${NC} Пункт: "
-        read -r choice < /dev/tty
+        ui_item 0 "Выход" "" gray
+        ui_ask
 
         case $choice in
             1)
-                echo -e "\n${GREEN}ТОП 20:${NC}"
-                [ -f /var/log/iptables-scanners-aggregate.csv ] && tail -20 /var/log/iptables-scanners-aggregate.csv || echo "Нет данных"
-                read -p $'\n[Enter] назад...' < /dev/tty
+                ui_screen "Топ атак"
+                echo
+                ui_frame_open "ПОСЛЕДНИЕ"
+                if [[ -s /var/log/iptables-scanners-aggregate.csv ]]; then
+                    while IFS= read -r line; do
+                        ui_row "$line"
+                    done < <(tail -20 /var/log/iptables-scanners-aggregate.csv)
+                else
+                    ui_row "Записей нет"
+                fi
+                ui_frame_close
+                ui_pause
                 ;;
             2) view_log "/var/log/iptables-scanners-ipv4.log" ;;
             3) view_log "/var/log/iptables-scanners-ipv6.log" ;;

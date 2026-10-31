@@ -31,7 +31,7 @@ recover_ssh_connection
 
 show_help() {
     cat << 'HELP'
-RemnaNode AntiScan — защита ноды поверх UFW
+AntiScan — защита ноды
 
 Использование:
   sudo bash install.sh [команда]
@@ -107,9 +107,25 @@ feature_mark() {
     fi
 }
 
+need_ui() {
+    if declare -F ui_screen >/dev/null 2>&1; then
+        return 0
+    fi
+    local root lib
+    root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    lib="$root/lib/ui.sh"
+    [[ -f "$lib" ]] || return 1
+    # shellcheck disable=SC1090
+    source "$lib"
+    ROOT="$root"
+    ui_init
+}
+
+on_off() { [[ "$1" == 1 ]] && printf 'включён' || printf 'выключен'; }
+
 show_banner() {
     local basic=0 experimental=0 rkn=0 bbr=0 left
-    printf '\n  %bRemnaNode AntiScan%b\n' "$BOLD$CYAN" "$NC"
+    printf '\n  %bAntiScan%b\n' "$BOLD$CYAN" "$NC"
     [[ ! -f "$SSH_DROPIN" ]] || basic=1
     ! grep -q 'UFW-ANTISCAN START' /etc/ufw/before.rules 2>/dev/null || experimental=1
     [[ ! -f "$RKN_CONF" ]] || rkn=1
@@ -133,7 +149,11 @@ show_banner() {
 ask() {
     local question="$1"
     local default="$2"
-    echo -ne "  ${BOLD}${question}${NC} [${CYAN}${default}${NC}]: "
+    if [[ -n "${GOLD:-}" ]]; then
+        echo -ne "  ${GOLD}${BOLD}▸${RESET} ${WHITE}${question}${RESET} ${GRAY}[${default}]${RESET}: "
+    else
+        echo -ne "  ${BOLD}${question}${NC} [${CYAN}${default}${NC}]: "
+    fi
     read -r REPLY || input_closed
     REPLY="${REPLY:-$default}"
 }
@@ -173,10 +193,39 @@ yn() {
     local question="$1"
     local default="${2:-y}"
     local hint; [[ "$default" == "y" ]] && hint="Y/n" || hint="y/N"
-    echo -ne "  ${BOLD}${question}${NC} [${CYAN}${hint}${NC}]: "
+    if [[ -n "${GOLD:-}" ]]; then
+        echo -ne "  ${GOLD}${BOLD}▸${RESET} ${WHITE}${question}${RESET} ${GRAY}[${hint}]${RESET}: "
+    else
+        echo -ne "  ${BOLD}${question}${NC} [${CYAN}${hint}${NC}]: "
+    fi
     read -r REPLY || input_closed
     REPLY="${REPLY:-$default}"
     [[ "${REPLY,,}" == "y" ]] && YN=1 || YN=0
+}
+
+open_box() {
+    if declare -F ui_frame_open >/dev/null 2>&1; then
+        echo
+        ui_frame_open "$1"
+    else
+        echo ""
+        echo -e "  ${BOLD}$1${NC}"
+    fi
+}
+
+fact_line() {
+    if declare -F ui_fact >/dev/null 2>&1; then
+        ui_fact "$1" "$2"
+    else
+        echo -e "  $1 ${CYAN}$2${NC}"
+    fi
+}
+
+close_box() {
+    if declare -F ui_frame_close >/dev/null 2>&1; then
+        ui_frame_close
+        echo
+    fi
 }
 
 # Previous Experimental answers become defaults; explicit ENV still wins.
@@ -193,14 +242,17 @@ load_experimental_defaults() {
 }
 
 ask_experimental_params() {
-    echo ""
-    echo -e "  ${BOLD}Настройка параметров защиты${NC}"
+    need_ui || true
+    ui_screen "Experimental"
+    echo
+    ui_frame_open "ПОЛЯ"
     if load_experimental_defaults; then
-        echo -e "  ${YELLOW}Enter — оставить значение из прошлого применения${NC}"
+        ui_row "Enter оставляет прошлое значение."
     else
-        echo -e "  ${YELLOW}Enter — оставить значение по умолчанию${NC}"
+        ui_row "Enter оставляет значение по умолчанию."
     fi
-    echo ""
+    ui_frame_close
+    echo
 
     # Авто-детект SSH
     local ssh_detected
@@ -219,7 +271,7 @@ ask_experimental_params() {
     if [[ -z "$ufw_tcp$ufw_udp" ]]; then
         ufw_tcp=443 ufw_udp=443
     else
-        echo -e "  ${CYAN}Порты ниже взяты из правил UFW.${NC}"
+        echo "  Порты ниже взяты из правил UFW."
     fi
     ask "TCP-порты сервиса (через запятую)" "${TCP_PORTS:-$ufw_tcp}"
     PARAM_TCP_PORTS="$REPLY"
@@ -231,8 +283,8 @@ ask_experimental_params() {
     ask "Whitelist IP/CIDR (через запятую, или оставь пустым)" "${WHITELIST:-}"
     PARAM_WHITELIST="$REPLY"
 
-    echo ""
-    echo -e "  ${BOLD}Функции Experimental — каждая включается вручную:${NC}"
+    echo
+    echo "  Дальше каждая функция включается отдельно."
 
     yn "Отбрасывать некорректные TCP-флаги?" "$([[ ${ENABLE_BAD_TCP_FLAGS:-0} == 1 ]] && echo y || echo n)"
     PARAM_BAD_TCP_FLAGS="$YN"
@@ -318,31 +370,23 @@ ask_experimental_params() {
     PARAM_DRY_RUN="$YN"
 
     # Итоговый summary
-    echo ""
-    echo -e "  ┌─ ${BOLD}Итоговые параметры${NC} ─────────────────────────"
-    # Labels carry their own padding: printf widths count bytes, not Cyrillic letters.
-    summary_row() { echo -e "  │  $1 ${CYAN}$2${NC}${3:+ ($3)}"; }
-    # Feature row: parameters are shown only when the feature is enabled.
-    feature_row() { summary_row "$1" "$(yes_no "$2")" "$([[ "$2" == 1 ]] && echo "${3:-}")"; }
-    summary_row "SSH-порт:   " "$PARAM_SSH_PORT"
-    summary_row "TCP-порты:  " "${PARAM_TCP_PORTS:-нет}"
-    summary_row "UDP-порты:  " "${PARAM_UDP_PORTS:-нет}"
-    summary_row "Whitelist:  " "${PARAM_WHITELIST:-не задан}"
-    feature_row "Bad flags:  " "$PARAM_BAD_TCP_FLAGS"
-    feature_row "Anti-spoof: " "$PARAM_ANTISPOOFING"
-    feature_row "SYN limit:  " "$PARAM_SYN_LIMIT" "${PARAM_SYN_RATE}/с, burst ${PARAM_SYN_BURST}"
-    feature_row "Connlimit:  " "$PARAM_CONN_LIMIT_ENABLED" "${PARAM_CONN_LIMIT} соединений"
-    feature_row "SSH limit:  " "$PARAM_SSH_LIMIT" "${PARAM_SSH_RATE}/мин, burst ${PARAM_SSH_BURST}"
-    feature_row "Portscan:   " "$PARAM_PORTSCAN" \
-        "${PARAM_PORTSCAN_HITS} событий за ${PARAM_PORTSCAN_WINDOW}с, бан ${PARAM_PORTSCAN_BAN_SECONDS}с"
-    feature_row "ICMP limit: " "$PARAM_ICMP_LIMIT" "${PARAM_ICMP_RATE}/с, burst ${PARAM_ICMP_BURST}"
-    feature_row "Fail2Ban:   " "$PARAM_FAIL2BAN" \
-        "${PARAM_F2B_MAXRETRY} попыток за ${PARAM_F2B_FINDTIME}с, бан ${PARAM_F2B_BANTIME}с"
-    feature_row "CrowdSec:   " "$PARAM_CROWDSEC"
-    summary_row "Safety:     " "${PARAM_SAFETY_TIMER}с"
-    summary_row "DRY RUN:    " "$(yes_no "$PARAM_DRY_RUN")"
-    echo -e "  └──────────────────────────────────────────"
-    echo ""
+    open_box "ИТОГ"
+    fact_line "SSH-порт" "$PARAM_SSH_PORT"
+    fact_line "TCP" "${PARAM_TCP_PORTS:-нет}"
+    fact_line "UDP" "${PARAM_UDP_PORTS:-нет}"
+    fact_line "Whitelist" "${PARAM_WHITELIST:-не задан}"
+    fact_line "Флаги" "$(yes_no "$PARAM_BAD_TCP_FLAGS")"
+    fact_line "Anti-spoof" "$(yes_no "$PARAM_ANTISPOOFING")"
+    fact_line "SYN" "$(yes_no "$PARAM_SYN_LIMIT") ${PARAM_SYN_RATE}/с"
+    fact_line "Соединения" "$(yes_no "$PARAM_CONN_LIMIT_ENABLED") ${PARAM_CONN_LIMIT}"
+    fact_line "SSH лимит" "$(yes_no "$PARAM_SSH_LIMIT") ${PARAM_SSH_RATE}/мин"
+    fact_line "Portscan" "$(yes_no "$PARAM_PORTSCAN")"
+    fact_line "ICMP" "$(yes_no "$PARAM_ICMP_LIMIT") ${PARAM_ICMP_RATE}/с"
+    fact_line "Fail2Ban" "$(yes_no "$PARAM_FAIL2BAN")"
+    fact_line "CrowdSec" "$(yes_no "$PARAM_CROWDSEC")"
+    fact_line "Таймер" "${PARAM_SAFETY_TIMER} с"
+    fact_line "Просмотр" "$(yes_no "$PARAM_DRY_RUN")"
+    close_box
 
     yn "Всё верно, продолжить?" "y"
     if [[ "$YN" == "0" ]]; then
@@ -381,6 +425,9 @@ run_experimental() {
 
 run_basic() {
     local default_user server_address ssh_detected key_verified=0 key_added=0
+    need_ui || true
+    ui_screen "Basic"
+    echo
     default_user="${SUDO_USER:-root}"
     ssh_detected=$(ss -tlnp 2>/dev/null \
         | awk '/sshd/{match($4,/[0-9]+$/); p=substr($4,RSTART,RLENGTH); if(p) print p}' \
@@ -393,7 +440,7 @@ run_basic() {
 
     yn "Добавить публичный SSH-ключ для ${PARAM_TARGET_USER}?" "n"
     if [[ "$YN" == 1 ]]; then
-        echo -e "  ${BOLD}Вставьте публичный ключ одной строкой:${NC}"
+        echo "  Вставь публичный ключ одной строкой."
         IFS= read -r PARAM_SSH_KEY
         if ! printf '%s\n' "$PARAM_SSH_KEY" | TARGET_USER="$PARAM_TARGET_USER" SSH_PORT="$PARAM_SSH_PORT" \
             bash "$SCRIPT_DIR/scripts/basic.sh" add-key; then
@@ -442,15 +489,14 @@ run_basic() {
     fi
     ask "Время safety-таймера, секунд" "${SAFETY_TIMER:-180}"
     PARAM_SAFETY_TIMER="$REPLY"
-    echo ""
-    echo -e "  ┌─ ${BOLD}Итоговые параметры${NC} ─────────────────────────"
-    echo -e "  │  Пользователь:   ${CYAN}${PARAM_TARGET_USER}${NC}, SSH-порт ${CYAN}${PARAM_SSH_PORT}${NC}"
-    echo -e "  │  Пароль SSH:     ${CYAN}$([[ $PARAM_DISABLE_PASSWORD == 1 ]] && echo "отключить для всех" || echo "не менять")${NC}"
-    echo -e "  │  Fail2Ban:       ${CYAN}$(yes_no "$PARAM_FAIL2BAN")${NC}"
-    echo -e "  │  CrowdSec:       ${CYAN}$(yes_no "$PARAM_CROWDSEC")${NC}"
-    echo -e "  │  Safety:         ${CYAN}${PARAM_SAFETY_TIMER}с${NC}"
-    echo -e "  └──────────────────────────────────────────"
-    echo ""
+    open_box "ИТОГ"
+    fact_line "Пользователь" "$PARAM_TARGET_USER"
+    fact_line "SSH-порт" "$PARAM_SSH_PORT"
+    fact_line "Пароль" "$([[ $PARAM_DISABLE_PASSWORD == 1 ]] && echo "выключить" || echo "не менять")"
+    fact_line "Fail2Ban" "$(yes_no "$PARAM_FAIL2BAN")"
+    fact_line "CrowdSec" "$(yes_no "$PARAM_CROWDSEC")"
+    fact_line "Таймер" "${PARAM_SAFETY_TIMER} с"
+    close_box
     warn "После применения потребуется ещё одна новая SSH-сессия и команда confirm."
     yn "Применить выбранные функции Basic?" "n"
     if [[ "$YN" != 1 ]]; then
@@ -468,18 +514,21 @@ run_basic() {
 
 run_tuning() {
     local ipv6_default ipv6_choice current_cc current_qdisc current_ipv6
-    echo ""
-    echo -e "  ${BOLD}Дополнительные настройки${NC}"
-    echo -e "  ${YELLOW}Каждая функция применяется только после явного выбора.${NC}"
-    echo ""
-
+    need_ui || true
     current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '?')
     current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo '?')
     current_ipv6=$(sysctl -n net.ipv6.conf.default.disable_ipv6 2>/dev/null || echo '?')
     [[ "$current_ipv6" != 0 ]] || current_ipv6="включён"
     [[ "$current_ipv6" != 1 ]] || current_ipv6="отключён"
-    echo "  Сейчас: TCP=${current_cc}, default qdisc=${current_qdisc}, IPv6=${current_ipv6}"
-    echo ""
+    ui_screen "Настройки"
+    echo
+    ui_frame_open "СЕЙЧАС"
+    ui_fact "TCP" "$current_cc"
+    ui_fact "Qdisc" "$current_qdisc"
+    ui_fact "IPv6" "$current_ipv6"
+    ui_row "Меняется только то, что выберешь ниже."
+    ui_frame_close
+    echo
 
     yn "Включить BBR + CAKE?" "$([[ ${ENABLE_BBR_CAKE:-0} == 1 ]] && echo y || echo n)"
     PARAM_BBR_CAKE="$YN"
@@ -492,8 +541,8 @@ run_tuning() {
         disable) ipv6_default=2 ;;
         *) ipv6_default=0 ;;
     esac
-    echo ""
-    echo "  IPv6: 0 — не менять, 1 — включить, 2 — отключить"
+    echo
+    echo "  IPv6: 0 не менять, 1 включить, 2 выключить."
     ask "Действие с IPv6" "$ipv6_default"
     ipv6_choice="$REPLY"
     case "$ipv6_choice" in
@@ -514,13 +563,11 @@ run_tuning() {
 
     ask "Время safety-таймера, секунд" "${SAFETY_TIMER:-180}"
     PARAM_SAFETY_TIMER="$REPLY"
-    echo ""
-    echo -e "  ┌─ ${BOLD}Итоговые параметры${NC} ─────────────────────────"
-    echo -e "  │  BBR + CAKE: ${CYAN}${PARAM_BBR_CAKE}${NC}"
-    echo -e "  │  IPv6:       ${CYAN}${PARAM_IPV6_MODE}${NC}"
-    echo -e "  │  Safety:     ${CYAN}${PARAM_SAFETY_TIMER}s${NC}"
-    echo -e "  └──────────────────────────────────────────"
-    echo ""
+    open_box "ИТОГ"
+    fact_line "BBR + CAKE" "$PARAM_BBR_CAKE"
+    fact_line "IPv6" "$PARAM_IPV6_MODE"
+    fact_line "Таймер" "${PARAM_SAFETY_TIMER} с"
+    close_box
     yn "Применить дополнительные настройки?" "n"
     [[ "$YN" == 1 ]] || { info "Применение отменено."; return 0; }
 
@@ -529,18 +576,17 @@ run_tuning() {
 }
 
 run_rkn() {
-    local choice
-    echo ""
-    echo -e "  ${BOLD}Блокировка подсетей РКН${NC}"
+    need_ui || return 1
+    ui_screen "РКН"
+    echo
     bash "$SCRIPT_DIR/scripts/rkn.sh" status
-    echo ""
-    echo "  1  Включить / перенастроить"
-    echo "  2  Обновить списки сейчас"
-    echo "  3  Отключить"
-    echo "  0  Назад"
-    echo ""
-    printf '  Выберите действие: '
-    read -r choice
+    ui_section "ДЕЙСТВИЯ"
+    ui_item 1 "Включить" "поставить или перенастроить" green
+    ui_item 2 "Обновить списки" "скачать сейчас" cyan
+    ui_item 3 "Отключить" "снять блокировку подсетей" red
+    echo
+    ui_item 0 "Назад" "" gray
+    ui_ask
     case "$choice" in
         1) ;;
         2) bash "$SCRIPT_DIR/scripts/rkn.sh" update; return ;;
@@ -565,11 +611,13 @@ run_rkn() {
             INTERVAL) cur_interval=$value ;;
         esac
     done < <(bash "$SCRIPT_DIR/scripts/rkn.sh" config 2>/dev/null || true)
-    echo ""
-    echo -e "  ${YELLOW}Входящие соединения из подсетей списка будут отбрасываться на всех портах.${NC}"
-    echo -e "  ${YELLOW}Ответы на исходящие соединения ноды и уже открытые сессии не затрагиваются.${NC}"
-    echo -e "  ${YELLOW}Enter — оставить текущее значение.${NC}"
-    echo ""
+    echo
+    ui_frame_open "ВНИМАНИЕ"
+    ui_row "Входящие из подсетей списка отбрасываются."
+    ui_row "Ответы ноды и открытые сессии не трогаются."
+    ui_row "Enter оставляет текущее значение."
+    ui_frame_close
+    echo
     ask "URL списков (через пробел)" "$cur_urls"
     PARAM_RKN_URLS="$REPLY"
     ask "Whitelist IP/CIDR через запятую (- очистить)" "$cur_whitelist"
@@ -593,16 +641,15 @@ run_rkn() {
 }
 
 show_protect_menu() {
-    local choice
-    echo ""
-    echo -e "  ${BOLD}Режим Protect${NC}"
-    echo "  1  Basic — SSH-ключ, пароль, Fail2Ban/CrowdSec"
-    echo "  2  Experimental — ручная настройка сетевых фильтров"
-    echo "  3  Блокировка РКН — авто-обновляемые подсети"
-    echo "  0  Назад"
-    echo ""
-    printf '  Выберите режим: '
-    read -r choice
+    need_ui || return 1
+    ui_screen "Protect"
+    ui_section "РЕЖИМ"
+    ui_item 1 "Basic" "SSH-ключ, пароль, Fail2Ban, CrowdSec" gold
+    ui_item 2 "Experimental" "сетевые фильтры" cyan
+    ui_item 3 "РКН" "подсети с автообновлением" yellow
+    echo
+    ui_item 0 "Назад" "" gray
+    ui_ask
     case "$choice" in
         1) run_basic ;;
         2) run_experimental ;;
@@ -613,26 +660,57 @@ show_protect_menu() {
 }
 
 show_menu() {
-    local choice
+    local basic experimental rkn bbr left yes
+    need_ui || return 1
     while true; do
-        show_banner
-        printf '  %b1%b  Protect — Basic / Experimental\n' "$BOLD" "$NC"
-        printf '  %b2%b  Доп. настройки — BBR + CAKE / IPv6\n' "$BOLD" "$NC"
-        printf '  %b3%b  Проверить статус\n' "$BOLD" "$NC"
-        printf '  %b4%b  Удалить защиту\n' "$BOLD" "$NC"
-        printf '  %b5%b  Обновить скрипт\n' "$BOLD" "$NC"
-        printf '  %b6%b  Подтвердить применение\n' "$BOLD" "$NC"
-        printf '\n  %b0%b  Выйти\n\n' "$BOLD" "$NC"
-        printf '  Выберите действие: '
-        read -r choice || return 0
+        basic=0
+        experimental=0
+        rkn=0
+        bbr=0
+        [[ ! -f "$SSH_DROPIN" ]] || basic=1
+        ! grep -q 'UFW-ANTISCAN START' /etc/ufw/before.rules 2>/dev/null || experimental=1
+        [[ ! -f "$RKN_CONF" ]] || rkn=1
+        [[ ! -f "$TUNING_BBR_SYSCTL" ]] || bbr=1
+        ui_screen "AntiScan"
+        echo
+        ui_frame_open "СОСТОЯНИЕ"
+        ui_fact "Basic" "$(on_off "$basic")"
+        ui_fact "Experimental" "$(on_off "$experimental")"
+        ui_fact "РКН" "$(on_off "$rkn")"
+        ui_fact "BBR" "$(on_off "$bbr")"
+        if [[ -f "$PENDING" ]]; then
+            left=$(( $(cat "$SAFETY_DEADLINE" 2>/dev/null || echo 0) - $(date +%s) ))
+            if (( left > 0 )); then
+                ui_fact "Откат" "$(printf '%d:%02d' $((left / 60)) $((left % 60)))"
+            else
+                ui_fact "Откат" "ожидается"
+            fi
+        fi
+        ui_frame_close
+        ui_frame_open "ВНИМАНИЕ"
+        ui_row "Меняет UFW, SSH, Fail2Ban или CrowdSec."
+        ui_row "Неподтверждённые правила откатятся сами."
+        ui_row "Проверь новую SSH-сессию, затем пункт 6."
+        ui_frame_close
+        ui_section "ЗАЩИТА"
+        ui_item 1 "Protect" "Basic, Experimental, РКН" gold
+        ui_item 2 "Настройки" "BBR, CAKE, IPv6" cyan
+        ui_item 3 "Статус" "что включено сейчас" cyan
+        ui_section "СЕРВИС"
+        ui_item 4 "Удалить" "снять защиту" red
+        ui_item 5 "Обновление" "в составе Moonlight" yellow
+        ui_item 6 "Подтвердить" "из новой SSH-сессии" green
+        echo
+        ui_item 0 "Выход" "назад в главное меню" gray
+        ui_ask
         case "$choice" in
             1) show_protect_menu || info "Настройка не завершена." ;;
             2) run_tuning || info "Дополнительные настройки не завершены." ;;
             3) bash "$SCRIPT_DIR/scripts/status.sh" || info "Не удалось получить полный статус." ;;
             4)
                 printf '  Удалить защиту? [y/N]: '
-                read -r choice || return 0
-                if [[ "${choice,,}" == y ]]; then
+                read -r yes < /dev/tty || return 0
+                if [[ "${yes,,}" == y ]]; then
                     bash "$SCRIPT_DIR/scripts/rollback.sh" || info "Удаление не завершено."
                 fi
                 ;;
@@ -645,11 +723,10 @@ show_menu() {
                 fi
                 ;;
             6) bash "$SCRIPT_DIR/scripts/confirm.sh" || info "Применение не подтверждено." ;;
-            0|q|Q) printf '\n  До встречи :3\n'; return 0 ;;
+            0|q|Q) return 0 ;;
             *) info "Введите номер от 0 до 6."; continue ;;
         esac
-        printf '\n  Enter — вернуться в меню…'
-        read -r choice || return 0
+        ui_pause
     done
 }
 

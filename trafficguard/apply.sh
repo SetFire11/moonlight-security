@@ -6,6 +6,16 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 [[ $EUID -ne 0 ]] && { echo "Запуск только от root"; exit 1; }
 
+# Если пакет ufw есть, блокировка вешается в ufw-before-input и молчит, пока UFW выключен.
+if command -v ufw >/dev/null 2>&1; then
+  ufw_status="$(ufw status 2>/dev/null | awk '/^Status:/{print $2}')"
+  if [[ "$ufw_status" != "active" ]]; then
+    echo "  Остановка: для Traffic Guard UFW должен быть включён."
+    echo "  Сначала: ufw allow OpenSSH && ufw enable"
+    exit 1
+  fi
+fi
+
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 LIST_DIR="$ROOT/lists"
 DEST="/opt/trafficguard/lists"
@@ -29,7 +39,7 @@ ln -sfn "$ROOT/manager.sh" /opt/trafficguard-manager.sh
 ln -sfn "$ROOT/manager.sh" /usr/local/bin/rknpidor
 mkdir -p "$DEST" "$LIST_DIR"
 
-echo -e "${CYAN}Локальные списки${NC}"
+echo "  Локальные списки."
 cp -a "$LIST_DIR/." "$DEST/"
 merged="$(mktemp)"
 for name in "${SOURCES[@]}"; do
@@ -48,13 +58,13 @@ if [[ -f "$EXCLUDE" ]]; then
   if [[ -s "$ex" ]]; then
     grep -vxF -f "$ex" "$DEST/scanners.list" > "$DEST/scanners.list.tmp" || true
     mv "$DEST/scanners.list.tmp" "$DEST/scanners.list"
-    echo "Исключения: $EXCLUDE"
+    echo "  Исключения: $EXCLUDE"
   fi
   rm -f "$ex"
 fi
 
 count="$(wc -l < "$DEST/scanners.list" | tr -d ' ')"
-echo "Подсетей в списке: $count"
+echo "  Подсетей в списке: $count"
 
 python3 -m http.server 8765 --bind 127.0.0.1 --directory "$DEST" >/tmp/tg-http.log 2>&1 &
 hpid=$!
@@ -66,8 +76,8 @@ set -e
 kill "$hpid" 2>/dev/null || true
 wait "$hpid" 2>/dev/null || true
 if [[ "$rc" -ne 0 ]]; then
-  echo -e "${RED}traffic-guard завершился с кодом $rc${NC}"
+  echo "  traffic-guard завершился с кодом $rc"
   exit "$rc"
 fi
-echo -e "${GREEN}Traffic Guard включён. Меню: rknpidor${NC}"
+echo "  Traffic Guard включён."
 traffic-guard --version 2>/dev/null || true

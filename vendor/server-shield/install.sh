@@ -38,13 +38,18 @@ print_logo() {
 }
 
 print_header() {
+    local lib="/opt/moonlight-security/lib/ui.sh"
+    if [[ -f "$lib" ]]; then
+        declare -F ui_screen >/dev/null 2>&1 || source "$lib"
+        ROOT="/opt/moonlight-security"
+        ui_init
+        ui_screen "Server Shield"
+        return
+    fi
     clear
     print_logo
     local version=$(get_version)
-    echo -e "    ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "    ${WHITE}Server Security Suite${NC}  ${CYAN}v${version}${NC}"
-    echo -e "    ${DIM}Enterprise Protection for VPN Providers${NC}"
-    echo -e "    ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "    ${WHITE}Server Shield${NC}  ${CYAN}v${version}${NC}"
     echo ""
 }
 

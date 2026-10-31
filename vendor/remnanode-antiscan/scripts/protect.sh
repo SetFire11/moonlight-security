@@ -26,12 +26,12 @@ ok()      { echo -e "${GREEN}[✔]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
 err()     { echo -e "${RED}[✘]${NC} $*" >&2; return 1; }
 dry()     { echo -e "${YELLOW}[DRY]${NC} $*"; }
-section() { echo -e "\n${BOLD}━━━ $* ━━━${NC}"; }
+section() { printf '\n  \033[1;38;5;117m[ %s ]\033[0m\n' "$*"; }
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     cat << 'HELP'
-RemnaNode AntiScan — Experimental-фильтры поверх UFW
+AntiScan — сетевые фильтры
 
 Использование:
   sudo bash scripts/protect.sh [опции]
