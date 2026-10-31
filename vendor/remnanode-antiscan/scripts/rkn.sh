@@ -196,6 +196,9 @@ load_family() {
     if [[ "$RKN_BLOCK_SSH" != 1 ]]; then
         "$bin" -A "$RKN_CHAIN" -p tcp --dport "$RKN_SSH_PORT" -j RETURN
     fi
+    # The prefix must match the Traffic Guard rsyslog filter so drops show up in its attack top.
+    "$bin" -A "$RKN_CHAIN" -m set --match-set "$set" src -m limit --limit 10/min --limit-burst 5 \
+        -j LOG --log-prefix "ANTISCAN-v$family: " --log-level 4
     "$bin" -A "$RKN_CHAIN" -m set --match-set "$set" src -j DROP
     "$bin" -C INPUT -j "$RKN_CHAIN" 2>/dev/null || "$bin" -I INPUT 1 -j "$RKN_CHAIN"
 }
