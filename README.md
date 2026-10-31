@@ -20,7 +20,7 @@ moonlight
 Когда репозиторий будет на GitHub:
 
 ```bash
-git clone https://github.com/OWNER/moonlight-security.git
+git clone https://github.com/SetFire11/moonlight-security.git
 cd moonlight-security
 sudo bash install.sh
 ```
