@@ -2,9 +2,9 @@
 
 Одно меню на сервере. Три защиты включаются отдельными пунктами и не настраиваются одним прогоном.
 
-1. **Traffic Guard** — блок сканеров по спискам. Списки берутся из [shadow-netlab/traffic-guard-lists](https://github.com/shadow-netlab/traffic-guard-lists): `government_networks.list`, `antiscanner.list`, `skipa.list`. Это те же источники, на которые ссылается [SUBA666/traffic-guard](https://github.com/SUBA666/traffic-guard).
-2. **RemnaNode AntiScan** — [HikaruApps/remnanode-antiscan](https://github.com/HikaruApps/remnanode-antiscan): лимиты, Fail2Ban, CrowdSec, подсети РКН, BBR.
-3. **Server Shield** — [SUBA666/server-shield](https://github.com/SUBA666/server-shield): файрвол, DDoS, SSH, nginx.
+1. **Traffic Guard** — блок сканеров. Списки лежат в `trafficguard/lists` и никуда не скачиваются.
+2. **AntiScan** — лимиты, Fail2Ban, CrowdSec, подсети РКН, BBR.
+3. **Server Shield** — файрвол, DDoS, SSH, nginx.
 
 ## Установка
 
@@ -27,7 +27,7 @@ sudo bash install.sh
 
 ## Списки
 
-Пункт 1 перед включением скачивает свежие списки. Если GitHub недоступен, остаётся снимок из `trafficguard/lists`.
+Пункт 1 берёт списки только из `trafficguard/lists`.
 
 Свой адрес или адрес партнёра, если он есть в списке, положи точной строкой в `trafficguard/exclude.list`. Иначе обратный путь до сервера можно отрезать. Пример: `trafficguard/exclude.list.example`.
 

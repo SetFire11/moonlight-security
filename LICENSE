@@ -1,10 +1,5 @@
-Moonlight Security bundles three separate tools.
-
-vendor/remnanode-antiscan and vendor/server-shield keep their own MIT licenses.
-trafficguard/traffic-guard is the Traffic Guard binary used with the public
-subnet lists from shadow-netlab/traffic-guard-lists.
-
-The Moonlight menu and installer are provided under the MIT License.
+Moonlight Security is provided under the MIT License.
+Bundled components keep their own license files.
 
 Copyright (c) 2026
 

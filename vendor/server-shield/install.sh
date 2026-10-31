@@ -21,7 +21,6 @@ NC=$'\e[0m'
 
 # Пути
 SHIELD_DIR="/opt/server-shield"
-GITHUB_RAW="https://raw.githubusercontent.com/SUBA666/server-shield/main"
 
 # ============================================
 # PREMIUM UI ФУНКЦИИ
@@ -419,41 +418,18 @@ install_packages() {
 }
 
 download_shield_files() {
-    print_step "Скачивание Server Shield..."
+    print_step "Установка Server Shield..."
     
     mkdir -p "$SHIELD_DIR"/{modules,backups,config,logs,scripts}
 
-    if [[ -n "${MOONLIGHT_SHIELD_SRC:-}" && -d "${MOONLIGHT_SHIELD_SRC}/modules" ]]; then
-        cp -a "${MOONLIGHT_SHIELD_SRC}/." "$SHIELD_DIR/"
-        chmod +x "$SHIELD_DIR"/*.sh 2>/dev/null || true
-        chmod +x "$SHIELD_DIR/modules/"*.sh 2>/dev/null || true
-        ln -sf "$SHIELD_DIR/shield.sh" /usr/local/bin/shield
-        print_success "Server Shield установлен из Moonlight Security"
-        return 0
+    local src="${MOONLIGHT_SHIELD_SRC:-}"
+    if [[ -z "$src" || ! -d "$src/modules" ]]; then
+        src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     fi
-    
-    local modules=(
-        "utils.sh" "ssh.sh" "keys.sh" "firewall.sh" "kernel.sh"
-        "fail2ban.sh" "telegram.sh" "rkhunter.sh" "backup.sh"
-        "status.sh" "menu.sh" "traffic.sh" "monitor.sh"
-        "updater.sh" "l7shield.sh"
-    )
-    
-    for module in "${modules[@]}"; do
-        curl -fsSL "$GITHUB_RAW/modules/$module" -o "$SHIELD_DIR/modules/$module" 2>/dev/null || true
-    done
-    
-    curl -fsSL "$GITHUB_RAW/shield.sh" -o "$SHIELD_DIR/shield.sh" 2>/dev/null || true
-    curl -fsSL "$GITHUB_RAW/uninstall.sh" -o "$SHIELD_DIR/uninstall.sh" 2>/dev/null || true
-    curl -fsSL "$GITHUB_RAW/VERSION" -o "$SHIELD_DIR/VERSION" 2>/dev/null || echo "3.3.0" > "$SHIELD_DIR/VERSION"
-    curl -fsSL "$GITHUB_RAW/README.md" -o "$SHIELD_DIR/README.md" 2>/dev/null || true
-    curl -fsSL "$GITHUB_RAW/CHANGELOG.md" -o "$SHIELD_DIR/CHANGELOG.md" 2>/dev/null || true
-    
+    cp -a "$src/." "$SHIELD_DIR/"
     chmod +x "$SHIELD_DIR"/*.sh 2>/dev/null || true
     chmod +x "$SHIELD_DIR/modules/"*.sh 2>/dev/null || true
-    
     ln -sf "$SHIELD_DIR/shield.sh" /usr/local/bin/shield
-    
     print_success "Server Shield установлен"
 }
 

@@ -10,12 +10,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIST_DIR="$ROOT/lists"
 DEST="/opt/trafficguard/lists"
 EXCLUDE="${EXCLUDE_FILE:-$ROOT/exclude.list}"
-BASE="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public"
 SOURCES=(government_networks.list antiscanner.list skipa.list)
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y ipset iptables rsyslog python3 curl ca-certificates
+apt-get install -y ipset iptables rsyslog python3
 if ! command -v ufw >/dev/null; then
   if ! dpkg -s iptables-persistent >/dev/null 2>&1; then
     echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
@@ -30,18 +29,7 @@ install -m 755 "$ROOT/manager.sh" /opt/trafficguard-manager.sh
 ln -sfn /opt/trafficguard-manager.sh /usr/local/bin/rknpidor
 mkdir -p "$DEST" "$LIST_DIR"
 
-echo -e "${CYAN}Обновление списков...${NC}"
-for name in "${SOURCES[@]}"; do
-  tmp="$(mktemp)"
-  if curl -fsSL --retry 2 --max-time 60 "$BASE/$name" -o "$tmp"; then
-    mv "$tmp" "$LIST_DIR/$name"
-    echo "  $name обновлён"
-  else
-    rm -f "$tmp"
-    echo "  $name оставлен локальный снимок"
-  fi
-done
-
+echo -e "${CYAN}Локальные списки${NC}"
 cp -a "$LIST_DIR/." "$DEST/"
 merged="$(mktemp)"
 for name in "${SOURCES[@]}"; do

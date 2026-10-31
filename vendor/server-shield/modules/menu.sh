@@ -383,8 +383,7 @@ reconfigure_menu() {
     if [[ -f "$install_script" ]]; then
         bash "$install_script" --reconfigure
     else
-        log_step "Загрузка установщика..."
-        bash <(curl -fsSL https://raw.githubusercontent.com/SUBA666/server-shield/main/install.sh) --reconfigure
+        log_error "Установщик не найден"
     fi
     
     press_any_key
@@ -401,14 +400,7 @@ _do_simple_update() {
     show_info "Текущая версия" "$local_ver"
     
     log_step "Проверка обновлений..."
-    
-    local remote_ver=$(curl -fsSL --connect-timeout 5 "https://raw.githubusercontent.com/SUBA666/server-shield/main/VERSION" 2>/dev/null | tr -d '[:space:]')
-    
-    if [[ -z "$remote_ver" ]]; then
-        log_error "Не удалось проверить обновления"
-        press_any_key
-        return
-    fi
+    local remote_ver="$local_ver"
     
     show_info "Последняя версия" "$remote_ver"
     echo ""
@@ -418,29 +410,8 @@ _do_simple_update() {
         press_any_key
         return
     fi
-    
-    if confirm_action "Обновить до $remote_ver?" "y"; then
-        log_step "Скачивание обновлений..."
-        
-        local GITHUB_RAW="https://raw.githubusercontent.com/SUBA666/server-shield/main"
-        local SHIELD_DIR="/opt/server-shield"
-        
-        local modules=("utils.sh" "ssh.sh" "keys.sh" "firewall.sh" "kernel.sh" "fail2ban.sh" "telegram.sh" "rkhunter.sh" "backup.sh" "status.sh" "menu.sh" "updater.sh" "l7shield.sh")
-        
-        for module in "${modules[@]}"; do
-            curl -fsSL "$GITHUB_RAW/modules/$module" -o "$SHIELD_DIR/modules/$module" 2>/dev/null
-        done
-        
-        curl -fsSL "$GITHUB_RAW/shield.sh" -o "$SHIELD_DIR/shield.sh" 2>/dev/null
-        curl -fsSL "$GITHUB_RAW/VERSION" -o "$SHIELD_DIR/VERSION" 2>/dev/null
-        
-        chmod +x "$SHIELD_DIR"/*.sh "$SHIELD_DIR/modules/"*.sh 2>/dev/null
-        
-        log_info "Обновление завершено!"
-        echo ""
-        echo -e "    ${YELLOW}Перезапустите shield:${NC} ${CYAN}shield${NC}"
-    fi
-    
+
+    log_info "Новая версия ставится вместе с Moonlight Security"
     press_any_key
 }
 

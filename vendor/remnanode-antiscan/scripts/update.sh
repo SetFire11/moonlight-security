@@ -39,9 +39,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
-printf '\n  Загрузка обновления из HikaruApps/remnanode-antiscan…\n'
-git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 clone --quiet --depth 1 --template='' \
-    https://github.com/HikaruApps/remnanode-antiscan.git "$WORK/release"
+echo 'Обновление этого компонента входит в Moonlight Security. Отдельной загрузки нет.'
+exit 0
 # Never execute downloaded code during validation.
 python3 - "$WORK/release" <<'PY'
 import ast

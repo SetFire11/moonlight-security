@@ -5,7 +5,6 @@
 
 source "$(dirname "$0")/utils.sh" 2>/dev/null || source "/opt/server-shield/modules/utils.sh"
 
-GITHUB_RAW="https://raw.githubusercontent.com/SUBA666/server-shield/main"
 LOCAL_VERSION_FILE="/opt/server-shield/VERSION"
 UPDATE_CHECK_FILE="/opt/server-shield/config/last_update_check"
 UPDATE_CACHE_FILE="/opt/server-shield/config/update_cache"
@@ -20,60 +19,13 @@ get_local_version() {
     fi
 }
 
-# Получить версию с GitHub (с кэшированием)
 get_remote_version() {
-    local current_time=$(date +%s)
-    local last_check=0
-    local cached_version=""
-    
-    # Читаем кэш
-    if [[ -f "$UPDATE_CACHE_FILE" ]]; then
-        last_check=$(head -1 "$UPDATE_CACHE_FILE" 2>/dev/null || echo "0")
-        cached_version=$(tail -1 "$UPDATE_CACHE_FILE" 2>/dev/null || echo "")
-    fi
-    
-    # Если кэш свежий — возвращаем из кэша
-    local time_diff=$((current_time - last_check))
-    if [[ $time_diff -lt $UPDATE_CHECK_INTERVAL ]] && [[ -n "$cached_version" ]]; then
-        echo "$cached_version"
-        return
-    fi
-    
-    # Иначе делаем запрос к GitHub
-    local remote_version
-    remote_version=$(curl -fsSL --connect-timeout 3 --max-time 5 "$GITHUB_RAW/VERSION" 2>/dev/null)
-    
-    if [[ $? -eq 0 ]] && [[ -n "$remote_version" ]]; then
-        # Сохраняем в кэш
-        mkdir -p "$(dirname "$UPDATE_CACHE_FILE")" 2>/dev/null
-        echo "$current_time" > "$UPDATE_CACHE_FILE"
-        echo "$remote_version" >> "$UPDATE_CACHE_FILE"
-        echo "$remote_version"
-    else
-        # Если запрос не удался — возвращаем кэш если есть
-        if [[ -n "$cached_version" ]]; then
-            echo "$cached_version"
-        else
-            echo ""
-        fi
-    fi
+    get_local_version
 }
 
 # Принудительная проверка обновлений (без кэша)
 get_remote_version_force() {
-    local remote_version
-    remote_version=$(curl -fsSL --connect-timeout 5 --max-time 10 "$GITHUB_RAW/VERSION" 2>/dev/null)
-    
-    if [[ $? -eq 0 ]] && [[ -n "$remote_version" ]]; then
-        # Обновляем кэш
-        local current_time=$(date +%s)
-        mkdir -p "$(dirname "$UPDATE_CACHE_FILE")" 2>/dev/null
-        echo "$current_time" > "$UPDATE_CACHE_FILE"
-        echo "$remote_version" >> "$UPDATE_CACHE_FILE"
-        echo "$remote_version"
-    else
-        echo ""
-    fi
+    get_local_version
 }
 
 # Сравнить версии (возвращает 0 если remote новее)
@@ -204,6 +156,8 @@ do_update() {
         log_info "Обновление отменено"
         return 0
     fi
+    log_info "Новая версия ставится вместе с Moonlight Security"
+    return 0
     
     echo ""
     log_step "Создание бэкапа..."
@@ -446,7 +400,8 @@ show_changelog() {
     echo -e "    ${WHITE}Что нового в обновлении:${NC}"
     echo ""
     
-    local changelog=$(curl -fsSL --connect-timeout 5 "$GITHUB_RAW/CHANGELOG.md" 2>/dev/null | head -50)
+    local changelog=""
+    [[ -f /opt/server-shield/CHANGELOG.md ]] && changelog=$(head -50 /opt/server-shield/CHANGELOG.md)
     
     if [[ -n "$changelog" ]]; then
         echo "$changelog" | while read line; do
