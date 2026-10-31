@@ -215,24 +215,22 @@ show_menu() {
         PKTS_CNT=$(iptables -vnL SCANNERS-BLOCK 2>/dev/null | grep "LOG" | awk '{print $1}')
         [[ -z "$PKTS_CNT" ]] && PKTS_CNT="0"
         
-        echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║        Moonlight  ·  Traffic Guard                  ║${NC}"
-        echo -e "${CYAN}╠══════════════════════════════════════════════════════╣${NC}"
-        echo -e "║  📊 Подсетей:       ${GREEN}${IPSET_CNT}${NC}                             "
-        echo -e "║  🔥 Атак отбито:    ${RED}${PKTS_CNT}${NC}                             "
-        echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
-        echo ""
-        echo -e " ${GREEN}1.${NC} 📈 Топ атак (CSV)"
-        echo -e " ${GREEN}2.${NC} 🕵 Логи IPv4 (Live)"
-        echo -e " ${GREEN}3.${NC} 🕵 Логи IPv6 (Live)"
-        echo -e " ${GREEN}4.${NC} 🧪 Управление IP (Ban/Unban)"
-        echo -e " ${GREEN}5.${NC} 🔄 Обновить списки (Update)"
-        echo -e " ${GREEN}6.${NC} 🛠️  Переустановить (Reinstall)"
-        echo -e " ${RED}7.${NC} 🗑️  Удалить (Uninstall)"
-        echo -e " ${RED}0.${NC} ❌ Выход"
-        echo ""
-        
-        echo -ne "${CYAN}👉 Ваш выбор:${NC} "
+        echo -e "${CYAN}╭────────────────────────────────────────────────────────────╮${NC}"
+        echo -e "${CYAN}│${NC}  Traffic Guard"
+        echo -e "${CYAN}│${NC}  Подсетей ${GREEN}${IPSET_CNT}${NC}    пакетов ${RED}${PKTS_CNT}${NC}"
+        echo -e "${CYAN}╰────────────────────────────────────────────────────────────╯${NC}"
+        echo
+        echo -e "  ${GREEN}1${NC}   Топ атак"
+        echo -e "  ${GREEN}2${NC}   Лог IPv4"
+        echo -e "  ${GREEN}3${NC}   Лог IPv6"
+        echo -e "  ${GREEN}4${NC}   Адреса вручную"
+        echo -e "  ${GREEN}5${NC}   Обновить списки"
+        echo -e "  ${GREEN}6${NC}   Переустановить"
+        echo -e "  ${RED}7${NC}   Удалить"
+        echo
+        echo -e "  ${RED}0${NC}   Выход"
+        echo
+        echo -ne "  ${CYAN}▸${NC} Пункт: "
         read -r choice < /dev/tty
 
         case $choice in
