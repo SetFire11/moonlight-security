@@ -5,7 +5,7 @@ CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
 [[ $EUID -ne 0 ]] && { echo "Запуск только от root"; exit 1; }
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 pause() { read -r -p $'\n[Enter] назад...' < /dev/tty || true; }
 

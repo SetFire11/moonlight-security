@@ -4,7 +4,7 @@ set -euo pipefail
 
 [[ $EUID -ne 0 ]] && { echo "Запуск только от root"; exit 1; }
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 DEST="/opt/moonlight-security"
 
 if [[ "$SRC" != "$DEST" ]]; then

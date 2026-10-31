@@ -6,7 +6,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 [[ $EUID -ne 0 ]] && { echo "Запуск только от root"; exit 1; }
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 LIST_DIR="$ROOT/lists"
 DEST="/opt/trafficguard/lists"
 EXCLUDE="${EXCLUDE_FILE:-$ROOT/exclude.list}"
@@ -25,8 +25,8 @@ fi
 systemctl enable --now rsyslog >/dev/null 2>&1 || true
 
 install -m 755 "$ROOT/traffic-guard" /usr/local/bin/traffic-guard
-install -m 755 "$ROOT/manager.sh" /opt/trafficguard-manager.sh
-ln -sfn /opt/trafficguard-manager.sh /usr/local/bin/rknpidor
+ln -sfn "$ROOT/manager.sh" /opt/trafficguard-manager.sh
+ln -sfn "$ROOT/manager.sh" /usr/local/bin/rknpidor
 mkdir -p "$DEST" "$LIST_DIR"
 
 echo -e "${CYAN}Локальные списки${NC}"
