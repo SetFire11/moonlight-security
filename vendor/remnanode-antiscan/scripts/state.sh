@@ -1,0 +1,482 @@
+#!/bin/bash
+# Root-owned state; shared by apply, confirm, timed restore and uninstall.
+STATE=/var/lib/ufw-antiscan
+PENDING=$STATE/pending
+AUTO_RESTORED=$STATE/auto-restored
+# Epoch seconds of the pending rollback; informational, for the menu countdown.
+SAFETY_DEADLINE=$STATE/safety-deadline
+# Last applied Experimental answers, offered as menu defaults (no secrets).
+EXPERIMENTAL_LAST=$STATE/experimental.last
+EXPERIMENTAL_KEYS=(
+ SSH_PORT TCP_PORTS UDP_PORTS WHITELIST ENABLE_BAD_TCP_FLAGS ENABLE_ANTISPOOFING
+ ENABLE_SYN_RATE_LIMIT SYN_RATE SYN_BURST ENABLE_CONN_LIMIT CONN_LIMIT ENABLE_SSH_RATE_LIMIT SSH_RATE SSH_BURST
+ ENABLE_PORTSCAN_BAN PORTSCAN_HITS PORTSCAN_WINDOW PORTSCAN_BAN_SECONDS ENABLE_ICMP_RATE_LIMIT ICMP_RATE ICMP_BURST
+ ENABLE_FAIL2BAN F2B_MAXRETRY F2B_FINDTIME F2B_BANTIME ENABLE_CROWDSEC SAFETY_TIMER
+)
+# Root-only directory: /run/lock is world-writable on Debian/Ubuntu.
+LOCK_FILE=/run/ufw-antiscan.lock
+SSH_DROPIN=/etc/ssh/sshd_config.d/00-remnanode-antiscan.conf
+TUNING_BBR_SYSCTL=/etc/sysctl.d/99-remnanode-antiscan-bbr-cake.conf
+TUNING_IPV6_SYSCTL=/etc/sysctl.d/99-remnanode-antiscan-ipv6.conf
+TUNING_MODULES=/etc/modules-load.d/remnanode-antiscan.conf
+# RKN network blocking lives outside the UFW files: its own INPUT chain and
+# ipsets, so a failed load never stops UFW itself from starting.
+RKN_CHAIN=antiscan-rkn
+RKN_SET4=ANTISCAN-RKN4
+RKN_SET6=ANTISCAN-RKN6
+RKN_CONF=/etc/remnanode-antiscan/rkn.conf
+RKN_CACHE=$STATE/rkn.list
+RKN_LOCK=/run/ufw-antiscan-rkn.lock
+RKN_LIB=/usr/local/lib/ufw-antiscan/rkn.sh
+RKN_LOAD_UNIT=remnanode-antiscan-rkn.service
+RKN_UPDATE_UNIT=remnanode-antiscan-rkn-update.service
+RKN_TIMER_UNIT=remnanode-antiscan-rkn-update.timer
+FIREWALL_MANAGED_FILES=(
+ /etc/ufw/before.rules /etc/ufw/before6.rules
+ /etc/fail2ban/jail.d/ufw-antiscan-ssh.conf
+ # Legacy blocklist artifacts are retained here only so upgrades and rollback
+ # can remove or restore installations made by older releases safely.
+ /usr/local/bin/ufw-antiscan-update-blocklists.sh
+ /usr/local/bin/ufw-antiscan-ensure-ipsets.sh
+ /etc/systemd/system/ufw-antiscan-ipsets.service
+ /etc/systemd/system/ufw.service.d/ufw-antiscan-ipsets.conf
+ /etc/systemd/system/ufw-antiscan-blocklists.service
+ /etc/systemd/system/ufw-antiscan-blocklists.timer
+ /etc/ufw-antiscan/blocklists.conf
+ /var/lib/ufw-antiscan/current.restore
+)
+BASIC_MANAGED_FILES=(
+ "$SSH_DROPIN"
+ /etc/fail2ban/jail.d/ufw-antiscan-ssh.conf
+)
+TUNING_MANAGED_FILES=(
+ "$TUNING_BBR_SYSCTL"
+ "$TUNING_IPV6_SYSCTL"
+ "$TUNING_MODULES"
+)
+FIREWALL_MANAGED_SERVICES=(ufw-antiscan-blocklists.timer ufw-antiscan-ipsets.service fail2ban crowdsec crowdsec-firewall-bouncer)
+BASIC_MANAGED_SERVICES=(fail2ban crowdsec crowdsec-firewall-bouncer)
+TUNING_MANAGED_SERVICES=()
+RKN_MANAGED_FILES=(
+ "/etc/systemd/system/$RKN_LOAD_UNIT"
+ "/etc/systemd/system/$RKN_UPDATE_UNIT"
+ "/etc/systemd/system/$RKN_TIMER_UNIT"
+ "$RKN_CONF"
+ "$RKN_CACHE"
+)
+RKN_MANAGED_SERVICES=("$RKN_LOAD_UNIT" "$RKN_TIMER_UNIT")
+TUNING_SYSCTL_KEYS=(net.core.default_qdisc net.ipv4.tcp_congestion_control)
+
+snapshot_kind() {
+    if [[ -f "$1/kind" ]]; then
+        cat "$1/kind"
+    else
+        # Snapshots made by releases before Basic mode were firewall snapshots.
+        printf 'firewall\n'
+    fi
+}
+
+managed_items() {
+    local kind=$1
+    local -n files_ref=$2 services_ref=$3
+    case "$kind" in
+        firewall)
+            files_ref=("${FIREWALL_MANAGED_FILES[@]}")
+            services_ref=("${FIREWALL_MANAGED_SERVICES[@]}")
+            ;;
+        basic)
+            files_ref=("${BASIC_MANAGED_FILES[@]}")
+            services_ref=("${BASIC_MANAGED_SERVICES[@]}")
+            ;;
+        tuning)
+            files_ref=("${TUNING_MANAGED_FILES[@]}")
+            services_ref=("${TUNING_MANAGED_SERVICES[@]}")
+            ;;
+        rkn)
+            files_ref=("${RKN_MANAGED_FILES[@]}")
+            services_ref=("${RKN_MANAGED_SERVICES[@]}")
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+snapshot() {
+    local dest=$1 kind=${2:-firewall} file unit
+    local -a files services
+    managed_items "$kind" files services || return 1
+    mkdir -p "$dest/files" "$dest/services"
+    chmod 700 "$dest"
+    printf '%s\n' "$kind" > "$dest/kind"
+    date +%s%N > "$dest/created"
+    for file in "${files[@]}"; do
+        if [[ -e "$file" || -L "$file" ]]; then
+            mkdir -p "$dest/files$(dirname "$file")"
+            cp -a "$file" "$dest/files$file"
+        fi
+    done
+    for unit in "${services[@]}"; do
+        systemctl is-active "$unit" > "$dest/services/$unit.active" 2>/dev/null || true
+        systemctl is-enabled "$unit" > "$dest/services/$unit.enabled" 2>/dev/null || true
+    done
+    if [[ "$kind" == tuning ]]; then
+        snapshot_tuning_runtime "$dest"
+    fi
+}
+
+# sudo drops SSH_CONNECTION unless it is preserved explicitly. Without it the
+# fresh-session check in confirm would silently be skipped, so recover it from
+# the nearest ancestor that still has it (sshd sets it for the login shell).
+recover_ssh_connection() {
+    [[ -z ${SSH_CONNECTION:-} ]] || return 0
+    command -v python3 >/dev/null || return 0
+    SSH_CONNECTION=$(python3 - "$$" <<'PY' || true
+import sys
+
+pid = int(sys.argv[1])
+seen = set()
+while pid > 1 and pid not in seen:
+    seen.add(pid)
+    try:
+        environment = open(f'/proc/{pid}/environ', 'rb').read().split(b'\0')
+        for item in environment:
+            if item.startswith(b'SSH_CONNECTION='):
+                value = item.split(b'=', 1)[1].decode(errors='strict')
+                if len(value.split()) == 4:
+                    print(value)
+                    raise SystemExit(0)
+        raw = open(f'/proc/{pid}/stat').read()
+        pid = int(raw.rsplit(')', 1)[1].split()[1])
+    except (FileNotFoundError, PermissionError, UnicodeDecodeError, IndexError, ValueError):
+        break
+raise SystemExit(1)
+PY
+)
+    export SSH_CONNECTION
+}
+
+snapshot_tuning_runtime() {
+    local dest=$1 key path iface
+    mkdir -p "$dest/sysctl" "$dest/ipv6-disable"
+    # Disabling IPv6 drops static addresses and routes; re-enabling it does not
+    # bring them back until the network is reconfigured, so keep a copy.
+    if command -v ip >/dev/null; then
+        ip -6 -j addr show > "$dest/ipv6-addr.json" 2>/dev/null || rm -f "$dest/ipv6-addr.json"
+        ip -6 -j route show table main > "$dest/ipv6-route.json" 2>/dev/null || rm -f "$dest/ipv6-route.json"
+    fi
+    for key in "${TUNING_SYSCTL_KEYS[@]}"; do
+        if ! sysctl -n "$key" > "$dest/sysctl/$key" 2>/dev/null; then
+            rm -f "$dest/sysctl/$key"
+        fi
+    done
+    if [[ -d /proc/sys/net/ipv6/conf ]]; then
+        for path in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
+            [[ -f "$path" ]] || continue
+            iface=${path%/disable_ipv6}
+            iface=${iface##*/}
+            [[ "$iface" != all ]] || continue
+            < "$path" tr -d '\n' > "$dest/ipv6-disable/$iface"
+        done
+    fi
+}
+
+restore_tuning_runtime() {
+    local dest=$1 key value file iface failed=0 default_value
+    if tuning_scope_selected "$dest" bbr; then
+        for key in "${TUNING_SYSCTL_KEYS[@]}"; do
+            file="$dest/sysctl/$key"
+            [[ -f "$file" ]] || continue
+            value=$(cat "$file")
+            sysctl -q -w "$key=$value" || failed=1
+        done
+    fi
+    if tuning_scope_selected "$dest" ipv6 && \
+        [[ -f "$dest/ipv6-disable/default" && -d /proc/sys/net/ipv6/conf ]]; then
+        default_value=$(cat "$dest/ipv6-disable/default")
+        sysctl -q -w "net.ipv6.conf.all.disable_ipv6=$default_value" || failed=1
+        for file in "$dest"/ipv6-disable/*; do
+            [[ -f "$file" ]] || continue
+            iface=${file##*/}
+            [[ "$iface" != all ]] || continue
+            [[ -f "/proc/sys/net/ipv6/conf/$iface/disable_ipv6" ]] || continue
+            value=$(cat "$file")
+            printf '%s\n' "$value" > "/proc/sys/net/ipv6/conf/$iface/disable_ipv6" || failed=1
+        done
+        restore_ipv6_static "$dest" || failed=1
+    fi
+    return "$failed"
+}
+
+# Re-add static global IPv6 addresses and routes lost while IPv6 was disabled.
+# Interfaces that already have a global address are left alone, so a stale
+# snapshot never adds addresses next to a working configuration.
+restore_ipv6_static() {
+    local dest=$1
+    [[ -s "$dest/ipv6-addr.json" ]] || return 0
+    command -v ip >/dev/null && command -v python3 >/dev/null || return 0
+    python3 - "$dest/ipv6-addr.json" "${dest}/ipv6-route.json" <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+def load(path):
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return []
+
+def current_global(ifname):
+    result = subprocess.run(['ip', '-6', '-j', 'addr', 'show', 'dev', ifname, 'scope', 'global'],
+                            capture_output=True, text=True)
+    try:
+        data = json.loads(result.stdout or '[]')
+    except ValueError:
+        return True
+    return any(entry.get('addr_info') for entry in data)
+
+restored = set()
+for link in load(sys.argv[1]):
+    ifname = link.get('ifname')
+    if not ifname or not os.path.exists(f'/proc/sys/net/ipv6/conf/{ifname}/disable_ipv6'):
+        continue
+    static = [a for a in link.get('addr_info', [])
+              if a.get('scope') == 'global' and not a.get('dynamic') and a.get('local')]
+    if not static or current_global(ifname):
+        continue
+    for address in static:
+        subprocess.run(['ip', '-6', 'addr', 'add', f"{address['local']}/{address['prefixlen']}",
+                        'dev', ifname], check=False)
+    restored.add(ifname)
+for route in load(sys.argv[2]):
+    dev = route.get('dev')
+    if dev not in restored or route.get('protocol') not in ('boot', 'static'):
+        continue
+    command = ['ip', '-6', 'route', 'replace', route.get('dst', 'default')]
+    if route.get('gateway'):
+        command += ['via', route['gateway']]
+    command += ['dev', dev]
+    if route.get('metric') is not None:
+        command += ['metric', str(route['metric'])]
+    subprocess.run(command, check=False)
+PY
+}
+
+tuning_scope_selected() {
+    local dest=$1 scope=$2
+    # Snapshots from the first tuning development builds had no scope markers.
+    # Treat them as covering both scopes so recovery remains conservative.
+    if [[ ! -f "$dest/restore-bbr" && ! -f "$dest/restore-ipv6" ]]; then
+        return 0
+    fi
+    [[ -f "$dest/restore-$scope" ]]
+}
+restore_files() {
+    local dest=$1 file tmp kind
+    local -a files services
+    kind=$(snapshot_kind "$dest")
+    managed_items "$kind" files services || return 1
+    for file in "${files[@]}"; do
+        if [[ "$kind" == tuning ]]; then
+            case "$file" in
+                "$TUNING_BBR_SYSCTL"|"$TUNING_MODULES")
+                    tuning_scope_selected "$dest" bbr || continue
+                    ;;
+                "$TUNING_IPV6_SYSCTL")
+                    tuning_scope_selected "$dest" ipv6 || continue
+                    ;;
+            esac
+        fi
+        [[ "${2:-}" == uninstall && "$file" == /etc/ufw/before*.rules ]] && continue
+        if [[ -e "$dest/files$file" || -L "$dest/files$file" ]]; then
+            mkdir -p "$(dirname "$file")" || return 1
+            tmp=$(mktemp "$(dirname "$file")/.antiscan-restore.XXXXXXXX") || return 1
+            rm -f "$tmp" || return 1
+            if ! cp -a "$dest/files$file" "$tmp" || ! mv -fT "$tmp" "$file"; then
+                rm -f "$tmp"
+                return 1
+            fi
+        else
+            rm -f "$file" || return 1
+        fi
+    done
+}
+
+snapshot_file_differs() {
+    local dest=$1 file=$2 saved="$1/files$2"
+    if [[ -e "$saved" || -L "$saved" ]]; then
+        [[ -e "$file" || -L "$file" ]] || return 0
+        cmp -s "$saved" "$file" || return 0
+    elif [[ -e "$file" || -L "$file" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+restore_services() {
+    local dest=$1 unit enabled active failed=0 kind
+    local -a files services
+    kind=$(snapshot_kind "$dest")
+    managed_items "$kind" files services || return 1
+    systemctl daemon-reload || return 1
+    for unit in "${services[@]}"; do
+        enabled=$(cat "$dest/services/$unit.enabled")
+        active=$(cat "$dest/services/$unit.active")
+        if [[ "$enabled" == enabled ]]; then
+            systemctl enable "$unit" || failed=1
+        elif [[ "$enabled" == enabled-runtime ]]; then
+            systemctl enable --runtime "$unit" || failed=1
+        elif [[ "$enabled" != masked && "$enabled" != static ]]; then
+            systemctl disable "$unit" 2>/dev/null || true
+        fi
+        if [[ "$active" == active ]]; then
+            systemctl restart "$unit" || failed=1
+        else
+            systemctl stop "$unit" 2>/dev/null || true
+        fi
+    done
+    return "$failed"
+}
+
+reload_ssh() {
+    local unit daemon
+    if command -v sshd >/dev/null 2>&1; then
+        daemon=$(command -v sshd)
+    elif [[ -x /usr/sbin/sshd ]]; then
+        daemon=/usr/sbin/sshd
+    else
+        return 1
+    fi
+    "$daemon" -t || return 1
+    for unit in ssh.service sshd.service; do
+        if systemctl is-active "$unit" >/dev/null 2>&1; then
+            systemctl reload "$unit"
+            return
+        fi
+    done
+    return 1
+}
+remove_private_chains() {
+    local binary chain
+    for binary in iptables ip6tables; do
+        chain=ufw-antiscan
+        [[ "$binary" == ip6tables ]] && chain=ufw6-antiscan
+        if command -v "$binary" >/dev/null && "$binary" -S "$chain" >/dev/null 2>&1; then
+            "$binary" -F "$chain" || return 1
+            "$binary" -X "$chain" || return 1
+        fi
+    done
+}
+restore_snapshot() {
+    local dest=$1 failed=0 kind
+    [[ -d "$dest/files" && -d "$dest/services" ]] || return 1
+    kind=$(snapshot_kind "$dest")
+    case "$kind" in
+        firewall)
+            systemctl stop ufw-antiscan-blocklists.timer ufw-antiscan-blocklists.service 2>/dev/null || true
+            restore_files "$dest" || return 1
+            # An older snapshot may contain rules referencing legacy ipsets. Restore
+            # those sets before UFW only when its bootstrap script was restored too.
+            if [[ -x /usr/local/bin/ufw-antiscan-ensure-ipsets.sh ]]; then
+                /usr/local/bin/ufw-antiscan-ensure-ipsets.sh || failed=1
+            fi
+            ufw reload || return 1
+            if ! grep -q 'UFW-ANTISCAN START' /etc/ufw/before.rules; then
+                remove_private_chains || failed=1
+            fi
+            restore_services "$dest" || failed=1
+            ;;
+        basic)
+            local ssh_changed=0
+            snapshot_file_differs "$dest" "$SSH_DROPIN" && ssh_changed=1
+            restore_files "$dest" || return 1
+            [[ "$ssh_changed" == 0 ]] || reload_ssh || failed=1
+            restore_services "$dest" || failed=1
+            ;;
+        tuning)
+            restore_files "$dest" || return 1
+            restore_tuning_runtime "$dest" || failed=1
+            ;;
+        rkn)
+            # Stop first: ExecStop unloads the chain and sets of the current setup.
+            systemctl disable --now "$RKN_TIMER_UNIT" 2>/dev/null || true
+            systemctl disable --now "$RKN_LOAD_UNIT" 2>/dev/null || true
+            if [[ -x "$RKN_LIB" ]]; then
+                "$RKN_LIB" unload || failed=1
+            fi
+            restore_files "$dest" || return 1
+            rmdir "$(dirname "$RKN_CONF")" 2>/dev/null || true
+            restore_services "$dest" || failed=1
+            ;;
+        *) return 1 ;;
+    esac
+    return "$failed"
+}
+
+arm_safety() {
+    local backup=$1 seconds=$2 deadline
+    if systemctl is-active ufw-antiscan-safety.service >/dev/null 2>&1; then
+        echo 'Safety restore has already started' >&2
+        return 1
+    fi
+    printf '%s\n' "$backup" > "$PENDING"
+    printf '%s\n' "$(($(date +%s) + seconds))" > "$SAFETY_DEADLINE"
+    rm -f "$AUTO_RESTORED"
+    systemctl disable --now ufw-antiscan-safety.timer 2>/dev/null || true
+    systemctl reset-failed ufw-antiscan-safety.service 2>/dev/null || true
+    deadline=$(date -u -d "@$(($(date +%s) + seconds))" '+%Y-%m-%d %H:%M:%S UTC') || return 1
+    cat > /etc/systemd/system/ufw-antiscan-safety.service.antiscan-new <<'EOF'
+[Unit]
+Description=ufw-antiscan: restore unconfirmed protection
+ConditionPathExists=/var/lib/ufw-antiscan/pending
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/ufw-antiscan/restore.sh
+Restart=on-failure
+RestartSec=10s
+EOF
+    cat > /etc/systemd/system/ufw-antiscan-safety.timer.antiscan-new <<EOF
+[Unit]
+Description=ufw-antiscan: persistent safety rollback timer
+
+[Timer]
+OnActiveSec=${seconds}s
+OnCalendar=${deadline}
+Persistent=true
+AccuracySec=1s
+RandomizedDelaySec=0
+Unit=ufw-antiscan-safety.service
+
+[Install]
+WantedBy=timers.target
+EOF
+    chmod 644 /etc/systemd/system/ufw-antiscan-safety.service.antiscan-new \
+              /etc/systemd/system/ufw-antiscan-safety.timer.antiscan-new
+    mv -f /etc/systemd/system/ufw-antiscan-safety.service.antiscan-new \
+          /etc/systemd/system/ufw-antiscan-safety.service
+    mv -f /etc/systemd/system/ufw-antiscan-safety.timer.antiscan-new \
+          /etc/systemd/system/ufw-antiscan-safety.timer
+    systemctl daemon-reload
+    systemctl enable --now ufw-antiscan-safety.timer
+}
+
+disarm_safety() {
+    systemctl disable --now ufw-antiscan-safety.timer 2>/dev/null || true
+    rm -f "$SAFETY_DEADLINE"
+    rm -f /etc/systemd/system/ufw-antiscan-safety.timer \
+          /etc/systemd/system/ufw-antiscan-safety.service \
+          /etc/systemd/system/ufw-antiscan-safety.timer.antiscan-new \
+          /etc/systemd/system/ufw-antiscan-safety.service.antiscan-new
+    systemctl daemon-reload
+}
+
+mark_confirmation_boundary() {
+    local backup=$1
+    [[ -n "${SSH_CONNECTION:-}" ]] || return 0
+    [[ -r /proc/sys/kernel/random/boot_id ]] || return 1
+    {
+        cat /proc/sys/kernel/random/boot_id
+        python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_BOOTTIME))'
+    } > "$backup/require-new-after"
+}

@@ -1,0 +1,3 @@
+trafficguard/exclude.list
+*.log
+*.tmp
