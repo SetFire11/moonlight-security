@@ -63,12 +63,12 @@ header() {
   (( ${#meta} > W - 2 )) && meta="${meta:0:$((W - 2))}"
   local left="  ●  Moonlight Security"
   local right="v${VERSION}"
-  local gap=$(( W - ${#left} - ${#right} ))
+  local gap=$(( W - ${#left} - ${#right} - 1 ))
   (( gap < 1 )) && gap=1
   clear
   echo
   rule top
-  printf "${LINE}│${RESET}  ${GOLD}●${RESET}  ${BOLD}${WHITE}Moonlight Security${RESET}%*s${GRAY}%s${RESET}${LINE}│${RESET}\n" "$gap" "" "$right"
+  printf "${LINE}│${RESET}  ${GOLD}●${RESET}  ${BOLD}${WHITE}Moonlight Security${RESET}%*s${GRAY}%s${RESET} ${LINE}│${RESET}\n" "$gap" "" "$right"
   paint_row "  $subtitle" "  ${GRAY}${subtitle}${RESET}"
   rule mid
   paint_row "  $meta" "  ${CYAN}${meta}${RESET}"
