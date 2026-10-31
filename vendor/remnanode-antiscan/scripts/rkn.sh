@@ -468,7 +468,7 @@ status() {
     if systemctl is-active "$RKN_LOAD_UNIT" >/dev/null 2>&1 && iptables -C INPUT -j "$RKN_CHAIN" 2>/dev/null; then
         count4=$(ipset list -t "$RKN_SET4" 2>/dev/null | awk -F': ' '/Number of entries/{print $2}')
         count6=$(ipset list -t "$RKN_SET6" 2>/dev/null | awk -F': ' '/Number of entries/{print $2}')
-        drops=$(iptables -nvxL "$RKN_CHAIN" 2>/dev/null | awk '/match-set/{print $1; exit}')
+        drops=$(iptables -nvxL "$RKN_CHAIN" 2>/dev/null | awk '$3 == "DROP" && /match-set/ {print $1; exit}')
         ui_fact "Состояние" "включён"
         ui_fact "IPv4" "${count4:-0}"
         ui_fact "IPv6" "${count6:-0}"

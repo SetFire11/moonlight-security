@@ -393,11 +393,12 @@ show_menu() {
             1)
                 ui_screen "Топ атак"
                 echo
-                ui_frame_open "ПОСЛЕДНИЕ"
+                ui_frame_open "ЧАЩЕ ВСЕГО"
                 if [[ -s /var/log/iptables-scanners-aggregate.csv ]]; then
+                    # The aggregator keeps the header first and sorts the rest by count, highest first.
                     while IFS= read -r line; do
                         ui_row "$line"
-                    done < <(tail -20 /var/log/iptables-scanners-aggregate.csv)
+                    done < <(head -21 /var/log/iptables-scanners-aggregate.csv)
                 else
                     ui_row "Записей нет"
                 fi
