@@ -24,7 +24,7 @@ SOURCES=(government_networks.list antiscanner.list skipa.list)
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y ipset iptables rsyslog python3
+apt-get install -y ipset iptables rsyslog python3 whois
 if ! command -v ufw >/dev/null; then
   if ! dpkg -s iptables-persistent >/dev/null 2>&1; then
     echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
@@ -79,5 +79,7 @@ if [[ "$rc" -ne 0 ]]; then
   echo "  traffic-guard завершился с кодом $rc"
   exit "$rc"
 fi
+bash "$ROOT/manager.sh" fix-logging
+bash "$ROOT/manager.sh" restore-manual
 echo "  Traffic Guard включён."
 traffic-guard --version 2>/dev/null || true

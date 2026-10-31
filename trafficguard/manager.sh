@@ -37,6 +37,122 @@ check_firewall_safety() {
     fi
 }
 
+scanner_set_for() {
+    local ip="$1"
+    if [[ "$ip" == *:* ]]; then
+        printf '%s\n' "SCANNERS-BLOCK-V6"
+    else
+        printf '%s\n' "SCANNERS-BLOCK-V4"
+    fi
+}
+
+valid_address() {
+    local ip="$1"
+    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]] && return 0
+    [[ "$ip" =~ ^[0-9a-fA-F:]*:[0-9a-fA-F:]+(/[0-9]{1,3})?$ ]] && return 0
+    return 1
+}
+
+save_ipset() {
+    local tmp
+    tmp="$(mktemp /etc/ipset.conf.XXXXXX)" || return 1
+    if ipset save > "$tmp"; then
+        chmod 644 "$tmp"
+        mv "$tmp" /etc/ipset.conf
+    else
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+restore_manual_bans() {
+    [[ -s "$MANUAL_FILE" ]] || return 0
+    local ip set
+    while IFS= read -r ip || [[ -n "$ip" ]]; do
+        ip="${ip//$'\r'/}"
+        [[ -z "$ip" || "$ip" == \#* ]] && continue
+        valid_address "$ip" || continue
+        set="$(scanner_set_for "$ip")"
+        ipset add "$set" "$ip" -exist 2>/dev/null || true
+    done < "$MANUAL_FILE"
+    save_ipset || true
+}
+
+fix_logging() {
+    local conf="/etc/rsyslog.d/10-iptables-scanners.conf"
+    local agg="/usr/local/bin/antiscan-aggregate-logs.sh"
+    local csv="/var/log/iptables-scanners-aggregate.csv"
+    local tmp unit="/etc/systemd/system/trafficguard-manual.service"
+    local changed
+
+    if ! command -v whois >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y whois
+    fi
+
+    changed="$(python3 - "$conf" "$agg" <<'PY'
+import sys
+from pathlib import Path
+
+changed = False
+conf = Path(sys.argv[1])
+if conf.is_file():
+    raw = conf.read_text(encoding="utf-8", errors="replace")
+    lines = raw.splitlines()
+    out = []
+    for i, line in enumerate(lines):
+        out.append(line)
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if line.startswith(":msg, contains,") and nxt.strip() != "& stop":
+            out.append("& stop")
+    text = "\n".join(out) + "\n"
+    if raw != text:
+        conf.write_text(text, encoding="utf-8")
+        changed = True
+
+agg = Path(sys.argv[2])
+if agg.is_file():
+    script = agg.read_text(encoding="utf-8", errors="replace")
+    skip = '        case "$ip" in 0.0.0.0|::|::1) continue ;; esac\n'
+    needle = "while read cnt ip; do\n"
+    if skip not in script:
+        agg.write_text(script.replace(needle, needle + skip), encoding="utf-8")
+print("changed" if changed else "same")
+PY
+)"
+    if [[ "$changed" == *changed* && -f "$conf" ]]; then
+        systemctl try-restart rsyslog >/dev/null 2>&1 || true
+    fi
+
+    if [[ -f "$csv" ]]; then
+        tmp="$(mktemp)"
+        awk -F'|' 'NR == 1 || ($2 != "0.0.0.0" && $2 != "::" && $2 != "::1")' "$csv" > "$tmp"
+        mv "$tmp" "$csv"
+    fi
+
+    if [[ -f /tmp/antiscan-whois-cache.txt ]]; then
+        tmp="$(mktemp)"
+        grep -v '|UNKNOWN|UNKNOWN$' /tmp/antiscan-whois-cache.txt > "$tmp" || true
+        mv "$tmp" /tmp/antiscan-whois-cache.txt
+    fi
+
+    cat > "$unit" <<'EOF'
+[Unit]
+Description=Traffic Guard manual bans
+After=antiscan-ipset-restore.service
+Wants=antiscan-ipset-restore.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/rknpidor restore-manual
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable trafficguard-manual.service >/dev/null 2>&1 || true
+}
+
 uninstall_process() {
     ui_screen "Удаление"
     echo
@@ -45,6 +161,10 @@ uninstall_process() {
     trap 'exit 0' INT
 
     [[ "$confirm" != "y" ]] && return
+
+    systemctl disable --now trafficguard-manual.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/trafficguard-manual.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
 
     # Удаляем файлы менеджера
     rm -f /usr/local/bin/rknpidor /opt/trafficguard-manager.sh "$MANUAL_FILE"
@@ -103,14 +223,21 @@ manage_test_ip() {
                 trap 'echo; echo "  Отмена."; sleep 1; continue' INT
                 read -r -p "$(printf "  ${GOLD}${BOLD}▸${RESET} ${WHITE}Адрес для бана:${RESET} ")" ip < /dev/tty
                 [[ -z "$ip" ]] && continue
-                
-                OUTPUT=$(ipset add SCANNERS-BLOCK-V4 "$ip" 2>&1)
-                if [ $? -eq 0 ]; then
+                if ! valid_address "$ip"; then
+                    echo "  Это не адрес."
+                    ui_pause
+                    continue
+                fi
+
+                set_name="$(scanner_set_for "$ip")"
+                OUTPUT=$(ipset add "$set_name" "$ip" 2>&1)
+                rc=$?
+                if [ "$rc" -eq 0 ]; then
                     echo "  ${ip} добавлен в блок."
-                    # Добавляем в файл, если его там еще нет
                     if ! grep -Fxq "$ip" "$MANUAL_FILE"; then
-                        echo "$ip" >> "$MANUAL_FILE"
+                        printf '%s\n' "$ip" >> "$MANUAL_FILE"
                     fi
+                    save_ipset || echo "  В файл набора не записалось."
                 else
                     echo "  Не вышло: $OUTPUT"
                 fi
@@ -148,13 +275,19 @@ manage_test_ip() {
                     TARGET_IP="$input"
                 fi
                 
+                TARGET_IP="${TARGET_IP//$'\r'/}"
+                [[ -z "$TARGET_IP" ]] && continue
                 echo "  Снимаю ${TARGET_IP}."
-                
-                OUTPUT=$(ipset del SCANNERS-BLOCK-V4 "$TARGET_IP" 2>&1)
-                # Удаляем из файла в любом случае
-                sed -i "/^$TARGET_IP$/d" "$MANUAL_FILE"
-                
-                if [ $? -eq 0 ]; then
+
+                set_name="$(scanner_set_for "$TARGET_IP")"
+                OUTPUT=$(ipset del "$set_name" "$TARGET_IP" 2>&1)
+                rc=$?
+                tmp_manual="$(mktemp)"
+                grep -vxF "$TARGET_IP" "$MANUAL_FILE" > "$tmp_manual" || true
+                mv "$tmp_manual" "$MANUAL_FILE"
+
+                if [ "$rc" -eq 0 ]; then
+                    save_ipset || echo "  В файл набора не записалось."
                     echo "  Адрес снят."
                 else
                     echo "  Из блока не ушёл: $OUTPUT"
@@ -221,18 +354,26 @@ view_log() {
     trap 'exit 0' INT
 }
 
+# LOG is rate-limited, so only the DROP rules give the real number.
+drop_count() {
+    "$1" -nvxL "$2" 2>/dev/null | awk '$3 == "DROP" && /match-set/ { s += $1 } END { print s + 0 }'
+}
+
 show_menu() {
     trap 'exit 0' INT
     while true; do
         IPSET_CNT=$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | awk '/Number of entries/{print $4}')
-        PKTS_CNT=$(iptables -vnL SCANNERS-BLOCK 2>/dev/null | awk '/LOG/{print $1; exit}')
+        PKTS_CNT=$(( $(drop_count iptables SCANNERS-BLOCK) + $(drop_count ip6tables SCANNERS-BLOCK) ))
         [[ -z "$IPSET_CNT" ]] && IPSET_CNT="0"
-        [[ -z "$PKTS_CNT" ]] && PKTS_CNT="0"
         ui_screen "Traffic Guard"
         echo
         ui_frame_open "СОСТОЯНИЕ"
         ui_fact "Подсети" "$IPSET_CNT"
         ui_fact "Отбито пакетов" "$PKTS_CNT"
+        # The AntiScan RKN chain runs first in INPUT and catches these networks before Traffic Guard.
+        if iptables -nL antiscan-rkn >/dev/null 2>&1; then
+            ui_fact "Отбито РКН" "$(( $(drop_count iptables antiscan-rkn) + $(drop_count ip6tables antiscan-rkn) ))"
+        fi
         ui_frame_close
         ui_section "СМОТРЕТЬ"
         ui_item 1 "Топ атак" "последние записи" cyan
@@ -284,5 +425,7 @@ case "${1:-}" in
     monitor) show_menu ;;
     update) update_lists ;;
     uninstall) uninstall_process ;;
+    restore-manual) restore_manual_bans ;;
+    fix-logging) fix_logging ;;
     *) show_menu ;; 
 esac
