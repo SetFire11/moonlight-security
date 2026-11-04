@@ -363,16 +363,26 @@ show_menu() {
     trap 'exit 0' INT
     while true; do
         IPSET_CNT=$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | awk '/Number of entries/{print $4}')
-        PKTS_CNT=$(( $(drop_count iptables SCANNERS-BLOCK) + $(drop_count ip6tables SCANNERS-BLOCK) ))
         [[ -z "$IPSET_CNT" ]] && IPSET_CNT="0"
+        # CrowdSec and the AntiScan RKN chain sit before Traffic Guard in INPUT, so a packet
+        # dropped by one of them never reaches the next one.
+        CS_CNT=$(( $(drop_count iptables CROWDSEC_CHAIN) + $(drop_count ip6tables CROWDSEC_CHAIN) ))
+        RKN_CNT=$(( $(drop_count iptables antiscan-rkn) + $(drop_count ip6tables antiscan-rkn) ))
+        PKTS_CNT=$(( $(drop_count iptables SCANNERS-BLOCK) + $(drop_count ip6tables SCANNERS-BLOCK) ))
         ui_screen "Traffic Guard"
         echo
         ui_frame_open "СОСТОЯНИЕ"
         ui_fact "Подсети" "$IPSET_CNT"
-        ui_fact "Отбито пакетов" "$PKTS_CNT"
-        # The AntiScan RKN chain runs first in INPUT and catches these networks before Traffic Guard.
+        ui_fact "Отбито всего" "$(( CS_CNT + RKN_CNT + PKTS_CNT ))"
+        if iptables -nL CROWDSEC_CHAIN >/dev/null 2>&1; then
+            ui_fact "  CrowdSec" "$CS_CNT"
+        fi
         if iptables -nL antiscan-rkn >/dev/null 2>&1; then
-            ui_fact "Отбито РКН" "$(( $(drop_count iptables antiscan-rkn) + $(drop_count ip6tables antiscan-rkn) ))"
+            ui_fact "  РКН" "$RKN_CNT"
+        fi
+        ui_fact "  Traffic Guard" "$PKTS_CNT"
+        if (( PKTS_CNT == 0 && CS_CNT + RKN_CNT > 0 )); then
+            ui_row "Traffic Guard последний: его сети ловят фильтры выше."
         fi
         ui_frame_close
         ui_section "СМОТРЕТЬ"
